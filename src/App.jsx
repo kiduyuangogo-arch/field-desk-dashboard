@@ -3,6 +3,7 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import _ from "lodash";
 import jsPDF from "jspdf";
+import html2canvas from "html2canvas";
 import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Legend, XAxis, YAxis,
   CartesianGrid, Tooltip, ResponsiveContainer, Cell, LabelList,
@@ -10,12 +11,26 @@ import {
 import {
   Upload, X, FileSpreadsheet, Search, ChevronLeft, ChevronRight,
   LayoutGrid, BarChart3, Table2, MapPinned, AlertCircle, Download,
-  FileText, Sparkles, Send,
+  FileText, Sparkles, Send, SlidersHorizontal,
 } from "lucide-react";
 
 const PALETTE = ["#3f6b52", "#b5652b", "#5c7a8a", "#8a6d3b", "#6b5b8a", "#4a7c6f", "#a5763f", "#527a7a"];
 const PAGE_SIZE = 25;
 const IDENTIFIER_THRESHOLD = 0.85;
+const SYSTEM_FIELD_NAMES = new Set(["objectid", "globalid", "creationdate", "creator", "editdate", "editor", "x", "y"]);
+
+const CHART_KIND_OPTIONS = [
+  { value: "bar2d", label: "Bar" },
+  { value: "bar3d", label: "Bar (3D)" },
+  { value: "hbar", label: "Bar (horizontal)" },
+  { value: "line", label: "Line" },
+  { value: "pie", label: "Pie" },
+  { value: "donut", label: "Donut" },
+];
+
+function isSystemField(name) {
+  return SYSTEM_FIELD_NAMES.has(String(name).trim().toLowerCase());
+}
 
 function detectType(values) {
   const clean = values
@@ -36,7 +51,7 @@ function profileColumns(rows) {
     const values = rows.map((r) => r[name]);
     const type = detectType(values);
     const nonEmpty = values.filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
-    const col = { name, type, filled: nonEmpty.length, total: rows.length };
+    const col = { name, type, filled: nonEmpty.length, total: rows.length, systemField: isSystemField(name) };
     if (type === "numeric") {
       const nums = nonEmpty.map(Number);
       col.min = Math.min(...nums);
@@ -125,79 +140,64 @@ function numericHistogram(rows, field, bins = 6) {
   return buckets.map((b) => ({ ...b, pct: b.value / nums.length }));
 }
 
-// A field's chart type is chosen from its shape, not fixed to bar charts.
-function classifyField(col) {
-  if (col.type === "numeric") return "histogram";
-  if (col.type === "categorical") {
-    if (col.multiSelect) return "multi";
-    if (col.unique <= 4) return "pie";
-    return "hbar";
+function defaultKindFor(col) {
+  if (col.type === "numeric") return "bar2d";
+  if (col.multiSelect) return "hbar";
+  if (col.unique <= 4) return "donut";
+  return "hbar";
+}
+
+function fieldInsight(col, data) {
+  if (!data.length) return "";
+  if (col.type === "numeric") {
+    return `Average ${round(col.mean)}, ranging from ${round(col.min)} to ${round(col.max)} (${col.filled} of ${col.total} answered).`;
   }
-  return null;
-}
-
-const KIND_LABEL = {
-  pie: "Share of responses",
-  hbar: "Response breakdown",
-  multi: "Multiple answers allowed",
-  histogram: "Distribution",
-};
-
-function downloadChartPng(containerEl, filename) {
-  const svg = containerEl?.querySelector("svg");
-  if (!svg) return;
-  const clone = svg.cloneNode(true);
-  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-  clone.setAttribute("style", "background:#ffffff");
-  const { width, height } = svg.getBoundingClientRect();
-  const svgData = new XMLSerializer().serializeToString(clone);
-  const svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
-  const url = URL.createObjectURL(svgBlob);
-  const img = new Image();
-  img.onload = () => {
-    const scale = 2;
-    const canvas = document.createElement("canvas");
-    canvas.width = width * scale;
-    canvas.height = height * scale;
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.scale(scale, scale);
-    ctx.drawImage(img, 0, 0, width, height);
-    URL.revokeObjectURL(url);
-    canvas.toBlob((blob) => {
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `${filename}.png`;
-      a.click();
-    });
-  };
-  img.src = url;
-}
-
-async function svgToPngDataUrl(svgString, width, height) {
-  return new Promise((resolve) => {
-    const blob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, width, height);
-      ctx.drawImage(img, 0, 0, width, height);
-      URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL("image/png"));
-    };
-    img.src = url;
-  });
+  const top = data[0];
+  return `Most common answer: "${top.name}" (${Math.round((top.pct || 0) * 100)}% of respondents).`;
 }
 
 function round(n) {
   if (n === undefined || n === null || isNaN(n)) return "—";
   return Math.round(n * 100) / 100;
+}
+
+function shadeColor(hex, percent) {
+  const num = parseInt(hex.replace("#", ""), 16);
+  let r = (num >> 16) + percent;
+  let g = ((num >> 8) & 0x00ff) + percent;
+  let b = (num & 0x0000ff) + percent;
+  r = Math.min(255, Math.max(0, r));
+  g = Math.min(255, Math.max(0, g));
+  b = Math.min(255, Math.max(0, b));
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
+}
+
+// Renders a pseudo-3D bar (front, top and side faces) since SVG has no true 3D.
+function ThreeDBarShape(props) {
+  const { x, y, width, height, fill } = props;
+  const depth = 8;
+  const top = shadeColor(fill, 30);
+  const side = shadeColor(fill, -25);
+  if (height <= 0) return null;
+  return (
+    <g>
+      <polygon
+        points={`${x + width},${y} ${x + width + depth},${y - depth} ${x + width + depth},${y + height - depth} ${x + width},${y + height}`}
+        fill={side}
+      />
+      <polygon points={`${x},${y} ${x + depth},${y - depth} ${x + width + depth},${y - depth} ${x + width},${y}`} fill={top} />
+      <rect x={x} y={y} width={width} height={height} fill={fill} />
+    </g>
+  );
+}
+
+async function downloadCardPng(cardEl, filename) {
+  if (!cardEl) return;
+  const canvas = await html2canvas(cardEl, { backgroundColor: "#ffffff", scale: 2 });
+  const a = document.createElement("a");
+  a.download = `${filename}.png`;
+  a.href = canvas.toDataURL("image/png");
+  a.click();
 }
 
 function ContourMark() {
@@ -210,11 +210,11 @@ function ContourMark() {
   );
 }
 
-function PieCard({ data, colorIdx }) {
+function PieCard({ data, colorIdx, donut }) {
   return (
-    <ResponsiveContainer width="100%" height={190}>
+    <ResponsiveContainer width="100%" height={210}>
       <PieChart>
-        <Pie data={data} dataKey="value" nameKey="name" innerRadius={38} outerRadius={68} paddingAngle={2}>
+        <Pie data={data} dataKey="value" nameKey="name" innerRadius={donut ? 38 : 0} outerRadius={68} paddingAngle={2}>
           {data.map((_e, i) => (
             <Cell key={i} fill={PALETTE[(colorIdx + i) % PALETTE.length]} />
           ))}
@@ -245,14 +245,14 @@ function HBarCard({ data, colorIdx }) {
   );
 }
 
-function HistCard({ data, colorIdx }) {
+function Bar2DCard({ data, colorIdx, threeD }) {
   return (
-    <ResponsiveContainer width="100%" height={200}>
-      <BarChart data={data} margin={{ top: 16, right: 4, left: 0, bottom: 34 }}>
+    <ResponsiveContainer width="100%" height={210}>
+      <BarChart data={data} margin={{ top: 16, right: threeD ? 14 : 4, left: 0, bottom: 34 }}>
         <XAxis dataKey="name" tick={{ fontSize: 9 }} angle={-25} textAnchor="end" interval={0} height={50} />
         <YAxis tick={{ fontSize: 10 }} width={28} />
         <Tooltip />
-        <Bar dataKey="value" radius={[3, 3, 0, 0]} fill={PALETTE[colorIdx % PALETTE.length]}>
+        <Bar dataKey="value" radius={threeD ? 0 : [3, 3, 0, 0]} fill={PALETTE[colorIdx % PALETTE.length]} shape={threeD ? ThreeDBarShape : undefined}>
           <LabelList dataKey="value" position="top" style={{ fontSize: 10, fill: "#44403c" }} />
         </Bar>
       </BarChart>
@@ -260,73 +260,90 @@ function HistCard({ data, colorIdx }) {
   );
 }
 
-function FieldChart({ col, rows, colorIdx }) {
+function LineFieldCard({ data, colorIdx }) {
+  return (
+    <ResponsiveContainer width="100%" height={210}>
+      <LineChart data={data} margin={{ top: 16, right: 8, left: 0, bottom: 34 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#e7e2d3" />
+        <XAxis dataKey="name" tick={{ fontSize: 9 }} angle={-25} textAnchor="end" interval={0} height={50} />
+        <YAxis tick={{ fontSize: 10 }} width={28} />
+        <Tooltip />
+        <Line type="monotone" dataKey="value" stroke={PALETTE[colorIdx % PALETTE.length]} strokeWidth={2} dot={{ r: 3 }} />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+function GenericChart({ kind, data, colorIdx }) {
+  if (kind === "pie") return <PieCard data={data} colorIdx={colorIdx} donut={false} />;
+  if (kind === "donut") return <PieCard data={data} colorIdx={colorIdx} donut />;
+  if (kind === "hbar") return <HBarCard data={data} colorIdx={colorIdx} />;
+  if (kind === "line") return <LineFieldCard data={data} colorIdx={colorIdx} />;
+  if (kind === "bar3d") return <Bar2DCard data={data} colorIdx={colorIdx} threeD />;
+  return <Bar2DCard data={data} colorIdx={colorIdx} />;
+}
+
+function FieldChart({ col, rows, colorIdx, kind, onChangeKind }) {
   const ref = useRef(null);
-  const kind = classifyField(col);
   const data = useMemo(() => {
-    if (kind === "histogram") return numericHistogram(rows, col.name);
-    if (kind === "multi") return groupCounts(rows, col.name, { limit: 10, splitMulti: true });
-    if (kind === "pie") return groupCounts(rows, col.name, { limit: 6 });
-    if (kind === "hbar") return groupCounts(rows, col.name, { limit: 10 });
-    return [];
+    if (col.type === "numeric") return numericHistogram(rows, col.name);
+    if (col.multiSelect) return groupCounts(rows, col.name, { limit: 10, splitMulti: true });
+    if (kind === "pie" || kind === "donut") return groupCounts(rows, col.name, { limit: 6 });
+    return groupCounts(rows, col.name, { limit: 10 });
   }, [rows, col, kind]);
 
-  if (!kind) return null;
+  const insight = fieldInsight(col, data);
 
   return (
-    <div className="bg-white border border-stone-300 rounded-sm p-4 hover:border-stone-400 transition-colors">
-      <div className="flex items-start justify-between gap-2 mb-1">
+    <div
+      ref={ref}
+      data-report-chart={col.name}
+      className="bg-white border border-stone-300 rounded-md p-4 hover:shadow-md hover:border-stone-400 transition-all"
+    >
+      <div className="flex items-start justify-between gap-2 mb-2">
         <h3 className="text-sm text-stone-800 leading-snug" title={col.name}>{col.name}</h3>
         <button
-          onClick={() => downloadChartPng(ref.current, col.name)}
+          onClick={() => downloadCardPng(ref.current, col.name)}
           className="text-stone-400 hover:text-stone-700 shrink-0"
           title="Download this chart as a PNG"
         >
           <Download className="w-3.5 h-3.5" />
         </button>
       </div>
-      <p className="text-xs text-stone-400 mb-2">{KIND_LABEL[kind]}</p>
-      <div ref={ref} data-report-chart={col.name}>
-        {kind === "pie" && <PieCard data={data} colorIdx={colorIdx} />}
-        {(kind === "hbar" || kind === "multi") && <HBarCard data={data} colorIdx={colorIdx} />}
-        {kind === "histogram" && <HistCard data={data} colorIdx={colorIdx} />}
-      </div>
+      <select
+        value={kind}
+        onChange={(e) => onChangeKind(col.name, e.target.value)}
+        className="text-xs border border-stone-300 rounded-sm px-1.5 py-0.5 mb-2 text-stone-600 bg-stone-50"
+      >
+        {CHART_KIND_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+      <GenericChart kind={kind} data={data} colorIdx={colorIdx} />
+      {insight && <p className="text-xs text-stone-500 mt-2 border-t border-stone-100 pt-2">{insight}</p>}
     </div>
   );
 }
 
 // Mounted off-screen at all times so a PDF report can be generated from any tab,
-// with a chart for every field rather than only whatever is currently visible.
-function ReportRenderRoot({ source }) {
+// with a chart (matching whatever type the person chose) for every field.
+function ReportRenderRoot({ source, kindFor }) {
   if (!source) return null;
-  const fields = source.columns.filter((c) => (c.type === "categorical" && !c.identifierLike) || c.type === "numeric");
+  const fields = source.columns.filter((c) => !c.systemField && ((c.type === "categorical" && !c.identifierLike) || c.type === "numeric"));
   return (
     <div id="report-render-root" style={{ position: "absolute", left: -10000, top: 0, width: 560 }} aria-hidden="true">
       {fields.map((c, i) => (
         <div key={c.name} style={{ width: 560, marginBottom: 24 }}>
-          <FieldChart col={c} rows={source.rows} colorIdx={i} />
+          <FieldChart col={c} rows={source.rows} colorIdx={i} kind={kindFor(c)} onChangeKind={() => {}} />
         </div>
       ))}
     </div>
   );
 }
 
-function DownloadChartButton({ label, containerId }) {
-  return (
-    <button
-      onClick={() => downloadChartPng(document.getElementById(containerId), label || "chart")}
-      className="ml-auto flex items-center gap-1 text-xs text-stone-600 border border-stone-300 rounded-sm px-2 py-1 hover:bg-stone-100"
-      title="Download this chart as a PNG"
-    >
-      <Download className="w-3.5 h-3.5" />
-      Download
-    </button>
-  );
-}
-
 function StatCard({ label, value }) {
   return (
-    <div className="bg-white border border-stone-300 rounded-sm p-4">
+    <div className="bg-white border border-stone-300 rounded-md p-4 hover:shadow-sm transition-shadow">
       <div className="text-sm text-stone-500">{label}</div>
       <div className="font-serif text-2xl text-stone-900 mt-1">{value}</div>
     </div>
@@ -343,6 +360,7 @@ export default function FieldDesk() {
   const [fieldSearch, setFieldSearch] = useState("");
   const [page, setPage] = useState(1);
   const [chartConfig, setChartConfig] = useState({});
+  const [typeOverrides, setTypeOverrides] = useState({});
   const [chatMessages, setChatMessages] = useState({});
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
@@ -401,14 +419,24 @@ export default function FieldDesk() {
     }
   };
 
-  const allCatCols = active ? active.columns.filter((c) => c.type === "categorical" && c.unique <= 40) : [];
+  const kindFor = useCallback((col) => {
+    const key = `${activeId}:${col.name}`;
+    return typeOverrides[key] || defaultKindFor(col);
+  }, [activeId, typeOverrides]);
+
+  const setKindFor = (fieldName, value) => {
+    setTypeOverrides((prev) => ({ ...prev, [`${activeId}:${fieldName}`]: value }));
+  };
+
+  const allCatCols = active ? active.columns.filter((c) => !c.systemField && c.type === "categorical" && c.unique <= 40) : [];
   const catCols = allCatCols.filter((c) => !c.identifierLike);
   const identifierCols = allCatCols.filter((c) => c.identifierLike);
-  const numCols = active ? active.columns.filter((c) => c.type === "numeric") : [];
+  const numCols = active ? active.columns.filter((c) => !c.systemField && c.type === "numeric") : [];
   const dateCols = active ? active.columns.filter((c) => c.type === "date") : [];
+  const systemCols = active ? active.columns.filter((c) => c.systemField) : [];
 
   const chartableFields = active
-    ? active.columns.filter((c) => (c.type === "categorical" && !c.identifierLike && c.unique <= 40) || c.type === "numeric")
+    ? active.columns.filter((c) => !c.systemField && ((c.type === "categorical" && !c.identifierLike && c.unique <= 40) || c.type === "numeric"))
     : [];
   const filteredFields = chartableFields.filter((c) => c.name.toLowerCase().includes(fieldSearch.toLowerCase()));
 
@@ -465,7 +493,7 @@ export default function FieldDesk() {
     const lines = [];
     lines.push(`Source: ${source.name}`);
     lines.push(`Rows: ${source.rows.length}, Columns: ${source.columns.length}`);
-    source.columns.forEach((c) => {
+    source.columns.filter((c) => !c.systemField).forEach((c) => {
       if (c.type === "numeric") {
         lines.push(`- ${c.name} (numeric): min ${round(c.min)}, mean ${round(c.mean)}, max ${round(c.max)}, filled ${c.filled}/${c.total}`);
       } else if (c.type === "categorical") {
@@ -477,6 +505,10 @@ export default function FieldDesk() {
         lines.push(`- ${c.name} (date field), filled ${c.filled}/${c.total}`);
       }
     });
+    const sysNames = source.columns.filter((c) => c.systemField).map((c) => c.name);
+    if (sysNames.length) {
+      lines.push(`\nSystem/location fields (not treated as survey questions): ${sysNames.join(", ")}`);
+    }
     return lines.join("\n");
   }, []);
 
@@ -499,44 +531,69 @@ export default function FieldDesk() {
       doc.setTextColor(20);
       doc.setFontSize(12);
       doc.text(`${active.rows.length.toLocaleString()} rows across ${active.columns.length} fields.`, margin, y);
-      y += 24;
+      y += 20;
 
-      const profile = buildProfile(active);
-      doc.setFont("courier", "normal");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(13);
+      doc.text("Question-by-question summary", margin, y);
+      y += 8;
+      doc.setDrawColor(200);
+      doc.line(margin, y, 547, y);
+      y += 16;
+
+      doc.setFont("helvetica", "normal");
       doc.setFontSize(9);
-      const wrapped = doc.splitTextToSize(profile, 500);
-      wrapped.forEach((line) => {
-        if (y > 760) {
+      active.columns.filter((c) => !c.systemField).forEach((c) => {
+        let line;
+        if (c.type === "numeric") {
+          line = `${c.name} — numeric: min ${round(c.min)}, mean ${round(c.mean)}, max ${round(c.max)} (${c.filled}/${c.total} answered)`;
+        } else if (c.type === "categorical") {
+          const top = groupCounts(active.rows, c.name, { limit: 4, splitMulti: c.multiSelect })
+            .map((e) => `${e.name} ${Math.round((e.pct || 0) * 100)}%`)
+            .join(", ");
+          line = `${c.name}${c.multiSelect ? " (multiple answers allowed)" : ""} — ${top}`;
+        } else {
+          return;
+        }
+        const wrapped = doc.splitTextToSize(`•  ${line}`, 500);
+        wrapped.forEach((wline, idx) => {
+          if (y > 770) {
+            doc.addPage();
+            y = margin;
+          }
+          doc.text(wline, margin + (idx > 0 ? 12 : 0), y);
+          y += 12;
+        });
+        y += 4;
+      });
+
+      const sysNames = active.columns.filter((c) => c.systemField).map((c) => c.name);
+      if (sysNames.length) {
+        if (y > 740) {
           doc.addPage();
           y = margin;
         }
-        doc.text(line, margin, y);
-        y += 12;
-      });
+        y += 8;
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(8);
+        doc.setTextColor(120);
+        doc.text(`System/location fields excluded from analysis: ${sysNames.join(", ")}`, margin, y);
+        doc.setTextColor(20);
+      }
 
       const chartNodes = document.querySelectorAll("#report-render-root [data-report-chart]");
       let imgY = margin;
       let onPage = 0;
       for (const node of chartNodes) {
-        const svg = node.querySelector("svg");
-        if (!svg) continue;
-        const { width, height } = svg.getBoundingClientRect();
-        if (!width || !height) continue;
-        const svgData = new XMLSerializer().serializeToString(svg);
-        const dataUrl = await svgToPngDataUrl(svgData, width, height);
-        const label = node.getAttribute("data-report-chart");
+        const canvas = await html2canvas(node, { backgroundColor: "#ffffff", scale: 2 });
+        const dataUrl = canvas.toDataURL("image/png");
         const imgWidth = 480;
-        const imgHeight = (height / width) * imgWidth;
+        const imgHeight = (canvas.height / canvas.width) * imgWidth;
 
         if (onPage === 0) {
           doc.addPage();
           imgY = margin;
         }
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(10);
-        const titleLines = doc.splitTextToSize(label, imgWidth);
-        doc.text(titleLines, margin, imgY);
-        imgY += titleLines.length * 12 + 6;
         doc.addImage(dataUrl, "PNG", margin, imgY, imgWidth, imgHeight);
         imgY += imgHeight + 26;
         onPage++;
@@ -705,10 +762,10 @@ export default function FieldDesk() {
                   <button
                     key={id}
                     onClick={() => setTab(id)}
-                    className={`flex items-center gap-1.5 pb-3 text-sm whitespace-nowrap ${
+                    className={`flex items-center gap-1.5 pb-3 px-1 text-sm whitespace-nowrap rounded-t-sm transition-colors ${
                       tab === id
                         ? "border-b-2 border-amber-700 text-stone-900 font-medium"
-                        : "text-stone-500 hover:text-stone-800"
+                        : "text-stone-500 hover:text-stone-800 hover:bg-stone-50"
                     }`}
                   >
                     <Icon className="w-4 h-4" />
@@ -726,16 +783,20 @@ export default function FieldDesk() {
                     <StatCard label="Numeric fields" value={numCols.length} />
                   </div>
 
-                  {identifierCols.length > 0 && (
+                  {(identifierCols.length > 0 || systemCols.length > 0) && (
                     <p className="text-xs text-stone-500 bg-stone-50 border border-stone-200 rounded-sm px-3 py-2">
-                      {identifierCols.map((c) => c.name).join(", ")} {identifierCols.length === 1 ? "looks" : "look"} like
-                      identifier fields (almost every value is unique), so {identifierCols.length === 1 ? "it isn't" : "they aren't"} charted
-                      here — check the Table tab to browse those values directly.
+                      {systemCols.length > 0 && (
+                        <>System fields ({systemCols.map((c) => c.name).join(", ")}) are Survey123/GIS metadata, not questions, so they're kept out of the charts below. </>
+                      )}
+                      {identifierCols.length > 0 && (
+                        <>{identifierCols.map((c) => c.name).join(", ")} {identifierCols.length === 1 ? "looks" : "look"} like identifier fields (nearly every value unique), so {identifierCols.length === 1 ? "it's" : "they're"} left out too. </>
+                      )}
+                      All of these are still visible in the Table tab.
                     </p>
                   )}
 
                   <div className="flex items-center justify-between">
-                    <h2 className="font-serif text-lg">All fields ({filteredFields.length})</h2>
+                    <h2 className="font-serif text-lg">All questions ({filteredFields.length})</h2>
                     <div className="flex items-center gap-2 border border-stone-300 rounded-sm bg-white px-2 py-1">
                       <Search className="w-3.5 h-3.5 text-stone-400" />
                       <input
@@ -752,7 +813,14 @@ export default function FieldDesk() {
                   ) : (
                     <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-4">
                       {filteredFields.map((c, i) => (
-                        <FieldChart key={c.name} col={c} rows={active.rows} colorIdx={i} />
+                        <FieldChart
+                          key={c.name}
+                          col={c}
+                          rows={active.rows}
+                          colorIdx={i}
+                          kind={kindFor(c)}
+                          onChangeKind={setKindFor}
+                        />
                       ))}
                     </div>
                   )}
@@ -761,119 +829,143 @@ export default function FieldDesk() {
 
               {tab === "charts" && (
                 <div className="space-y-6">
-                  <div className="bg-white border border-stone-300 rounded-sm p-4">
-                    <h2 className="font-serif text-base mb-3">Custom pivot</h2>
-                    <div className="flex flex-wrap gap-3 mb-4 text-sm">
-                      <label className="flex items-center gap-2">
-                        Group by
-                        <select
-                          value={cfg.groupCol}
-                          onChange={(e) => setCfg({ groupCol: e.target.value })}
-                          className="border border-stone-300 rounded-sm px-2 py-1"
-                        >
-                          {catCols.map((c) => (
-                            <option key={c.name} value={c.name}>{c.name}{c.multiSelect ? " (multi-select)" : ""}</option>
-                          ))}
-                          {identifierCols.length > 0 && (
-                            <optgroup label="Identifier-like fields">
-                              {identifierCols.map((c) => (
-                                <option key={c.name} value={c.name}>{c.name}</option>
-                              ))}
-                            </optgroup>
-                          )}
-                        </select>
-                      </label>
-                      {!groupIsMulti && (
-                        <label className="flex items-center gap-2">
-                          Measure
+                  <div className="bg-white border border-stone-300 rounded-md p-4">
+                    <h2 className="font-serif text-base mb-4 flex items-center gap-2">
+                      <SlidersHorizontal className="w-4 h-4 text-stone-500" />
+                      Custom pivot
+                    </h2>
+                    <div className="flex flex-col md:flex-row gap-6">
+                      <div className="w-full md:w-56 shrink-0 space-y-4 text-sm">
+                        <label className="block">
+                          <span className="block text-xs text-stone-500 mb-1">Group by</span>
                           <select
-                            value={cfg.measure}
-                            onChange={(e) => setCfg({ measure: e.target.value })}
-                            className="border border-stone-300 rounded-sm px-2 py-1"
+                            value={cfg.groupCol}
+                            onChange={(e) => setCfg({ groupCol: e.target.value })}
+                            className="w-full border border-stone-300 rounded-sm px-2 py-1.5"
                           >
-                            <option value="count">Count of rows</option>
-                            {numCols.length > 0 && <option value="sum">Sum of</option>}
-                            {numCols.length > 0 && <option value="avg">Average of</option>}
+                            {catCols.map((c) => (
+                              <option key={c.name} value={c.name}>{c.name}{c.multiSelect ? " (multi-select)" : ""}</option>
+                            ))}
+                            {identifierCols.length > 0 && (
+                              <optgroup label="Identifier-like fields">
+                                {identifierCols.map((c) => (
+                                  <option key={c.name} value={c.name}>{c.name}</option>
+                                ))}
+                              </optgroup>
+                            )}
                           </select>
                         </label>
-                      )}
-                      {!groupIsMulti && cfg.measure !== "count" && (
-                        <select
-                          value={cfg.measureCol}
-                          onChange={(e) => setCfg({ measureCol: e.target.value })}
-                          className="border border-stone-300 rounded-sm px-2 py-1 text-sm"
-                        >
-                          {numCols.map((c) => (
-                            <option key={c.name} value={c.name}>{c.name}</option>
-                          ))}
-                        </select>
-                      )}
-                      <DownloadChartButton label={cfg.groupCol} containerId="group-chart" />
-                    </div>
-                    {catCols.length === 0 ? (
-                      <p className="text-sm text-stone-500">No categorical fields to group by.</p>
-                    ) : (
-                      <div id="group-chart" data-report-chart={`Breakdown by ${cfg.groupCol}`}>
-                        <ResponsiveContainer width="100%" height={340}>
-                          <BarChart data={groupChartData} margin={{ top: 20, right: 8, left: 0, bottom: 50 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#e7e2d3" />
-                            <XAxis dataKey="name" tick={{ fontSize: 11 }} angle={-30} textAnchor="end" interval={0} />
-                            <YAxis tick={{ fontSize: 11 }} />
-                            <Tooltip formatter={(value, _n, item) => [`${round(value)} (${Math.round((item.payload.pct || 0) * 100)}%)`, "Value"]} />
-                            <Bar dataKey="value" radius={[3, 3, 0, 0]}>
-                              <LabelList dataKey="value" position="top" style={{ fontSize: 11, fill: "#44403c" }} formatter={(v) => round(v)} />
-                              {groupChartData.map((_entry, i) => (
-                                <Cell key={i} fill={PALETTE[i % PALETTE.length]} />
+                        {!groupIsMulti && (
+                          <label className="block">
+                            <span className="block text-xs text-stone-500 mb-1">Measure</span>
+                            <select
+                              value={cfg.measure}
+                              onChange={(e) => setCfg({ measure: e.target.value })}
+                              className="w-full border border-stone-300 rounded-sm px-2 py-1.5"
+                            >
+                              <option value="count">Count of rows</option>
+                              {numCols.length > 0 && <option value="sum">Sum of</option>}
+                              {numCols.length > 0 && <option value="avg">Average of</option>}
+                            </select>
+                          </label>
+                        )}
+                        {!groupIsMulti && cfg.measure !== "count" && (
+                          <label className="block">
+                            <span className="block text-xs text-stone-500 mb-1">Numeric field</span>
+                            <select
+                              value={cfg.measureCol}
+                              onChange={(e) => setCfg({ measureCol: e.target.value })}
+                              className="w-full border border-stone-300 rounded-sm px-2 py-1.5"
+                            >
+                              {numCols.map((c) => (
+                                <option key={c.name} value={c.name}>{c.name}</option>
                               ))}
-                            </Bar>
-                          </BarChart>
-                        </ResponsiveContainer>
+                            </select>
+                          </label>
+                        )}
+                        <button
+                          onClick={() => downloadCardPng(document.getElementById("group-chart"), cfg.groupCol || "chart")}
+                          className="flex items-center gap-1.5 text-xs text-stone-600 border border-stone-300 rounded-sm px-2 py-1.5 hover:bg-stone-100 w-full justify-center"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          Download chart
+                        </button>
                       </div>
-                    )}
+                      <div className="flex-1 min-w-0">
+                        {catCols.length === 0 ? (
+                          <p className="text-sm text-stone-500">No categorical fields to group by.</p>
+                        ) : (
+                          <div id="group-chart" className="bg-white">
+                            <ResponsiveContainer width="100%" height={340}>
+                              <BarChart data={groupChartData} margin={{ top: 20, right: 8, left: 0, bottom: 50 }}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#e7e2d3" />
+                                <XAxis dataKey="name" tick={{ fontSize: 11 }} angle={-30} textAnchor="end" interval={0} />
+                                <YAxis tick={{ fontSize: 11 }} />
+                                <Tooltip formatter={(value, _n, item) => [`${round(value)} (${Math.round((item.payload.pct || 0) * 100)}%)`, "Value"]} />
+                                <Bar dataKey="value" radius={[3, 3, 0, 0]}>
+                                  <LabelList dataKey="value" position="top" style={{ fontSize: 11, fill: "#44403c" }} formatter={(v) => round(v)} />
+                                  {groupChartData.map((_entry, i) => (
+                                    <Cell key={i} fill={PALETTE[i % PALETTE.length]} />
+                                  ))}
+                                </Bar>
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
 
                   {dateCols.length > 0 && (
-                    <div className="bg-white border border-stone-300 rounded-sm p-4">
-                      <div className="flex items-center justify-between mb-3">
-                        <h2 className="font-serif text-base">Responses over time</h2>
-                        <DownloadChartButton label={`${cfg.dateCol}-over-time`} containerId="time-chart" />
-                      </div>
-                      <div className="flex flex-wrap gap-3 mb-4 text-sm">
-                        <label className="flex items-center gap-2">
-                          Date field
-                          <select
-                            value={cfg.dateCol}
-                            onChange={(e) => setCfg({ dateCol: e.target.value })}
-                            className="border border-stone-300 rounded-sm px-2 py-1"
+                    <div className="bg-white border border-stone-300 rounded-md p-4">
+                      <h2 className="font-serif text-base mb-4">Responses over time</h2>
+                      <div className="flex flex-col md:flex-row gap-6">
+                        <div className="w-full md:w-56 shrink-0 space-y-4 text-sm">
+                          <label className="block">
+                            <span className="block text-xs text-stone-500 mb-1">Date field</span>
+                            <select
+                              value={cfg.dateCol}
+                              onChange={(e) => setCfg({ dateCol: e.target.value })}
+                              className="w-full border border-stone-300 rounded-sm px-2 py-1.5"
+                            >
+                              {dateCols.map((c) => (
+                                <option key={c.name} value={c.name}>{c.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block">
+                            <span className="block text-xs text-stone-500 mb-1">Group by</span>
+                            <select
+                              value={cfg.timeBucket}
+                              onChange={(e) => setCfg({ timeBucket: e.target.value })}
+                              className="w-full border border-stone-300 rounded-sm px-2 py-1.5"
+                            >
+                              <option value="day">Day</option>
+                              <option value="week">Week</option>
+                              <option value="month">Month</option>
+                            </select>
+                          </label>
+                          <button
+                            onClick={() => downloadCardPng(document.getElementById("time-chart"), `${cfg.dateCol}-over-time`)}
+                            className="flex items-center gap-1.5 text-xs text-stone-600 border border-stone-300 rounded-sm px-2 py-1.5 hover:bg-stone-100 w-full justify-center"
                           >
-                            {dateCols.map((c) => (
-                              <option key={c.name} value={c.name}>{c.name}</option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="flex items-center gap-2">
-                          Group by
-                          <select
-                            value={cfg.timeBucket}
-                            onChange={(e) => setCfg({ timeBucket: e.target.value })}
-                            className="border border-stone-300 rounded-sm px-2 py-1"
-                          >
-                            <option value="day">Day</option>
-                            <option value="week">Week</option>
-                            <option value="month">Month</option>
-                          </select>
-                        </label>
-                      </div>
-                      <div id="time-chart" data-report-chart={`Responses over time (${cfg.dateCol})`}>
-                        <ResponsiveContainer width="100%" height={280}>
-                          <LineChart data={timeChartData} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#e7e2d3" />
-                            <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                            <YAxis tick={{ fontSize: 11 }} />
-                            <Tooltip />
-                            <Line type="monotone" dataKey="value" stroke="#3f6b52" strokeWidth={2} dot={false} />
-                          </LineChart>
-                        </ResponsiveContainer>
+                            <Download className="w-3.5 h-3.5" />
+                            Download chart
+                          </button>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div id="time-chart" className="bg-white">
+                            <ResponsiveContainer width="100%" height={280}>
+                              <LineChart data={timeChartData} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#e7e2d3" />
+                                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                                <YAxis tick={{ fontSize: 11 }} />
+                                <Tooltip />
+                                <Line type="monotone" dataKey="value" stroke="#3f6b52" strokeWidth={2} dot={false} />
+                              </LineChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -881,7 +973,7 @@ export default function FieldDesk() {
               )}
 
               {tab === "table" && (
-                <div className="bg-white border border-stone-300 rounded-sm">
+                <div className="bg-white border border-stone-300 rounded-md">
                   <div className="p-3 border-b border-stone-200 flex items-center gap-2">
                     <Search className="w-4 h-4 text-stone-400" />
                     <input
@@ -951,11 +1043,12 @@ export default function FieldDesk() {
               )}
 
               {tab === "report" && (
-                <div className="bg-white border border-stone-300 rounded-sm p-6 max-w-2xl">
+                <div className="bg-white border border-stone-300 rounded-md p-6 max-w-2xl">
                   <h2 className="font-serif text-lg mb-2">Dataset report</h2>
                   <p className="text-sm text-stone-600 mb-4">
-                    Generates a PDF with row/column counts, a written breakdown of every field, and a
-                    chart for every categorical and numeric question in this dataset.
+                    Generates a PDF with a question-by-question summary and a chart (matching whatever
+                    chart type you picked on the Overview tab) for every question, complete with its
+                    legend, border, and a one-line takeaway underneath.
                   </p>
                   <button
                     onClick={generateReport}
@@ -972,7 +1065,7 @@ export default function FieldDesk() {
               )}
 
               {tab === "assistant" && (
-                <div className="bg-white border border-stone-300 rounded-sm p-4 max-w-2xl flex flex-col h-[520px]">
+                <div className="bg-white border border-stone-300 rounded-md p-4 max-w-2xl flex flex-col h-[520px]">
                   <div className="flex items-center gap-2 mb-3">
                     <Sparkles className="w-4 h-4 text-amber-700" />
                     <h2 className="font-serif text-base">Ask Claude about this data</h2>
@@ -1022,7 +1115,7 @@ export default function FieldDesk() {
           )}
         </main>
       </div>
-      <ReportRenderRoot source={active} />
+      <ReportRenderRoot source={active} kindFor={kindFor} />
     </div>
   );
 }
