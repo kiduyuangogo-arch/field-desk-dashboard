@@ -4,8 +4,8 @@ import * as XLSX from "xlsx";
 import _ from "lodash";
 import jsPDF from "jspdf";
 import {
-  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Cell, LabelList,
+  BarChart, Bar, LineChart, Line, PieChart, Pie, Legend, XAxis, YAxis,
+  CartesianGrid, Tooltip, ResponsiveContainer, Cell, LabelList,
 } from "recharts";
 import {
   Upload, X, FileSpreadsheet, Search, ChevronLeft, ChevronRight,
@@ -13,7 +13,7 @@ import {
   FileText, Sparkles, Send,
 } from "lucide-react";
 
-const PALETTE = ["#3f6b52", "#b5652b", "#5c7a8a", "#8a6d3b", "#6b5b8a", "#4a7c6f"];
+const PALETTE = ["#3f6b52", "#b5652b", "#5c7a8a", "#8a6d3b", "#6b5b8a", "#4a7c6f", "#a5763f", "#527a7a"];
 const PAGE_SIZE = 25;
 const IDENTIFIER_THRESHOLD = 0.85;
 
@@ -46,6 +46,8 @@ function profileColumns(rows) {
     if (type === "categorical") {
       col.unique = new Set(nonEmpty).size;
       col.identifierLike = nonEmpty.length > 0 && col.unique / nonEmpty.length >= IDENTIFIER_THRESHOLD && col.unique > 5;
+      const commaCount = nonEmpty.filter((v) => String(v).includes(",")).length;
+      col.multiSelect = nonEmpty.length > 0 && commaCount / nonEmpty.length >= 0.15;
     }
     return col;
   });
@@ -64,7 +66,25 @@ function bucketDate(d, span) {
 }
 
 function groupCounts(rows, field, opts = {}) {
-  const { measure = "count", measureCol, limit = 12 } = opts;
+  const { measure = "count", measureCol, limit = 12, splitMulti = false } = opts;
+  if (splitMulti) {
+    const tally = {};
+    rows.forEach((r) => {
+      const raw = r[field];
+      const tags = raw && String(raw).trim() !== "" ? String(raw).split(",").map((t) => t.trim()).filter(Boolean) : ["No answer"];
+      tags.forEach((t) => {
+        tally[t] = (tally[t] || 0) + 1;
+      });
+    });
+    let entries = Object.entries(tally).map(([name, value]) => ({ name, value, pct: value / rows.length }));
+    entries = _.orderBy(entries, "value", "desc");
+    if (entries.length > limit) {
+      const top = entries.slice(0, limit - 1);
+      const rest = entries.slice(limit - 1).reduce((a, e) => a + e.value, 0);
+      entries = [...top, { name: "Other", value: rest, pct: 0 }];
+    }
+    return entries;
+  }
   const grouped = _.groupBy(rows, (r) => {
     const v = r[field];
     return v === "" || v === null || v === undefined ? "No answer" : String(v);
@@ -85,7 +105,44 @@ function groupCounts(rows, field, opts = {}) {
   return entries;
 }
 
-// Serializes a chart's SVG node to a downloadable PNG using native browser APIs.
+function numericHistogram(rows, field, bins = 6) {
+  const nums = rows.map((r) => Number(r[field])).filter((n) => !isNaN(n));
+  if (!nums.length) return [];
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  if (min === max) return [{ name: `${round(min)}`, value: nums.length, pct: 1 }];
+  const width = (max - min) / bins;
+  const buckets = Array.from({ length: bins }, (_, i) => ({
+    name: `${round(min + i * width)}–${round(min + (i + 1) * width)}`,
+    value: 0,
+  }));
+  nums.forEach((n) => {
+    let idx = Math.floor((n - min) / width);
+    if (idx >= bins) idx = bins - 1;
+    if (idx < 0) idx = 0;
+    buckets[idx].value++;
+  });
+  return buckets.map((b) => ({ ...b, pct: b.value / nums.length }));
+}
+
+// A field's chart type is chosen from its shape, not fixed to bar charts.
+function classifyField(col) {
+  if (col.type === "numeric") return "histogram";
+  if (col.type === "categorical") {
+    if (col.multiSelect) return "multi";
+    if (col.unique <= 4) return "pie";
+    return "hbar";
+  }
+  return null;
+}
+
+const KIND_LABEL = {
+  pie: "Share of responses",
+  hbar: "Response breakdown",
+  multi: "Multiple answers allowed",
+  histogram: "Distribution",
+};
+
 function downloadChartPng(containerEl, filename) {
   const svg = containerEl?.querySelector("svg");
   if (!svg) return;
@@ -118,6 +175,31 @@ function downloadChartPng(containerEl, filename) {
   img.src = url;
 }
 
+async function svgToPngDataUrl(svgString, width, height) {
+  return new Promise((resolve) => {
+    const blob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    img.src = url;
+  });
+}
+
+function round(n) {
+  if (n === undefined || n === null || isNaN(n)) return "—";
+  return Math.round(n * 100) / 100;
+}
+
 function ContourMark() {
   return (
     <svg viewBox="0 0 160 60" className="w-32 h-12 opacity-80" aria-hidden="true">
@@ -128,6 +210,129 @@ function ContourMark() {
   );
 }
 
+function PieCard({ data, colorIdx }) {
+  return (
+    <ResponsiveContainer width="100%" height={190}>
+      <PieChart>
+        <Pie data={data} dataKey="value" nameKey="name" innerRadius={38} outerRadius={68} paddingAngle={2}>
+          {data.map((_e, i) => (
+            <Cell key={i} fill={PALETTE[(colorIdx + i) % PALETTE.length]} />
+          ))}
+        </Pie>
+        <Tooltip formatter={(v, _n, item) => [`${v} (${Math.round((item.payload.pct || 0) * 100)}%)`, "Value"]} />
+        <Legend wrapperStyle={{ fontSize: 11 }} />
+      </PieChart>
+    </ResponsiveContainer>
+  );
+}
+
+function HBarCard({ data, colorIdx }) {
+  const height = Math.max(160, data.length * 26);
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={data} layout="vertical" margin={{ top: 4, right: 32, left: 8, bottom: 4 }}>
+        <XAxis type="number" tick={{ fontSize: 10 }} />
+        <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 10 }} />
+        <Tooltip formatter={(v, _n, item) => [`${v} (${Math.round((item.payload.pct || 0) * 100)}%)`, "Value"]} />
+        <Bar dataKey="value" radius={[0, 3, 3, 0]}>
+          <LabelList dataKey="value" position="right" style={{ fontSize: 10, fill: "#44403c" }} />
+          {data.map((_e, i) => (
+            <Cell key={i} fill={PALETTE[(colorIdx + i) % PALETTE.length]} />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+function HistCard({ data, colorIdx }) {
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <BarChart data={data} margin={{ top: 16, right: 4, left: 0, bottom: 34 }}>
+        <XAxis dataKey="name" tick={{ fontSize: 9 }} angle={-25} textAnchor="end" interval={0} height={50} />
+        <YAxis tick={{ fontSize: 10 }} width={28} />
+        <Tooltip />
+        <Bar dataKey="value" radius={[3, 3, 0, 0]} fill={PALETTE[colorIdx % PALETTE.length]}>
+          <LabelList dataKey="value" position="top" style={{ fontSize: 10, fill: "#44403c" }} />
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+function FieldChart({ col, rows, colorIdx }) {
+  const ref = useRef(null);
+  const kind = classifyField(col);
+  const data = useMemo(() => {
+    if (kind === "histogram") return numericHistogram(rows, col.name);
+    if (kind === "multi") return groupCounts(rows, col.name, { limit: 10, splitMulti: true });
+    if (kind === "pie") return groupCounts(rows, col.name, { limit: 6 });
+    if (kind === "hbar") return groupCounts(rows, col.name, { limit: 10 });
+    return [];
+  }, [rows, col, kind]);
+
+  if (!kind) return null;
+
+  return (
+    <div className="bg-white border border-stone-300 rounded-sm p-4 hover:border-stone-400 transition-colors">
+      <div className="flex items-start justify-between gap-2 mb-1">
+        <h3 className="text-sm text-stone-800 leading-snug" title={col.name}>{col.name}</h3>
+        <button
+          onClick={() => downloadChartPng(ref.current, col.name)}
+          className="text-stone-400 hover:text-stone-700 shrink-0"
+          title="Download this chart as a PNG"
+        >
+          <Download className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <p className="text-xs text-stone-400 mb-2">{KIND_LABEL[kind]}</p>
+      <div ref={ref} data-report-chart={col.name}>
+        {kind === "pie" && <PieCard data={data} colorIdx={colorIdx} />}
+        {(kind === "hbar" || kind === "multi") && <HBarCard data={data} colorIdx={colorIdx} />}
+        {kind === "histogram" && <HistCard data={data} colorIdx={colorIdx} />}
+      </div>
+    </div>
+  );
+}
+
+// Mounted off-screen at all times so a PDF report can be generated from any tab,
+// with a chart for every field rather than only whatever is currently visible.
+function ReportRenderRoot({ source }) {
+  if (!source) return null;
+  const fields = source.columns.filter((c) => (c.type === "categorical" && !c.identifierLike) || c.type === "numeric");
+  return (
+    <div id="report-render-root" style={{ position: "absolute", left: -10000, top: 0, width: 560 }} aria-hidden="true">
+      {fields.map((c, i) => (
+        <div key={c.name} style={{ width: 560, marginBottom: 24 }}>
+          <FieldChart col={c} rows={source.rows} colorIdx={i} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DownloadChartButton({ label, containerId }) {
+  return (
+    <button
+      onClick={() => downloadChartPng(document.getElementById(containerId), label || "chart")}
+      className="ml-auto flex items-center gap-1 text-xs text-stone-600 border border-stone-300 rounded-sm px-2 py-1 hover:bg-stone-100"
+      title="Download this chart as a PNG"
+    >
+      <Download className="w-3.5 h-3.5" />
+      Download
+    </button>
+  );
+}
+
+function StatCard({ label, value }) {
+  return (
+    <div className="bg-white border border-stone-300 rounded-sm p-4">
+      <div className="text-sm text-stone-500">{label}</div>
+      <div className="font-serif text-2xl text-stone-900 mt-1">{value}</div>
+    </div>
+  );
+}
+
 export default function FieldDesk() {
   const [sources, setSources] = useState([]);
   const [activeId, setActiveId] = useState(null);
@@ -135,6 +340,7 @@ export default function FieldDesk() {
   const [error, setError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [search, setSearch] = useState("");
+  const [fieldSearch, setFieldSearch] = useState("");
   const [page, setPage] = useState(1);
   const [chartConfig, setChartConfig] = useState({});
   const [chatMessages, setChatMessages] = useState({});
@@ -201,6 +407,11 @@ export default function FieldDesk() {
   const numCols = active ? active.columns.filter((c) => c.type === "numeric") : [];
   const dateCols = active ? active.columns.filter((c) => c.type === "date") : [];
 
+  const chartableFields = active
+    ? active.columns.filter((c) => (c.type === "categorical" && !c.identifierLike && c.unique <= 40) || c.type === "numeric")
+    : [];
+  const filteredFields = chartableFields.filter((c) => c.name.toLowerCase().includes(fieldSearch.toLowerCase()));
+
   const cfg = chartConfig[activeId] || {
     groupCol: catCols[0]?.name || "",
     measure: "count",
@@ -211,10 +422,17 @@ export default function FieldDesk() {
   const setCfg = (patch) =>
     setChartConfig((prev) => ({ ...prev, [activeId]: { ...cfg, ...patch } }));
 
+  const selectedGroupCol = allCatCols.find((c) => c.name === cfg.groupCol);
+  const groupIsMulti = !!selectedGroupCol?.multiSelect;
+
   const groupChartData = useMemo(() => {
     if (!active || !cfg.groupCol) return [];
-    return groupCounts(active.rows, cfg.groupCol, { measure: cfg.measure, measureCol: cfg.measureCol });
-  }, [active, cfg.groupCol, cfg.measure, cfg.measureCol]);
+    return groupCounts(active.rows, cfg.groupCol, {
+      measure: groupIsMulti ? "count" : cfg.measure,
+      measureCol: cfg.measureCol,
+      splitMulti: groupIsMulti,
+    });
+  }, [active, cfg.groupCol, cfg.measure, cfg.measureCol, groupIsMulti]);
 
   const timeChartData = useMemo(() => {
     if (!active || !cfg.dateCol) return [];
@@ -243,7 +461,6 @@ export default function FieldDesk() {
     if (e.dataTransfer.files?.length) handleFiles(e.dataTransfer.files);
   };
 
-  // Builds a compact, text-only profile of the dataset (no raw rows) for the report and the AI assistant.
   const buildProfile = useCallback((source) => {
     const lines = [];
     lines.push(`Source: ${source.name}`);
@@ -252,10 +469,10 @@ export default function FieldDesk() {
       if (c.type === "numeric") {
         lines.push(`- ${c.name} (numeric): min ${round(c.min)}, mean ${round(c.mean)}, max ${round(c.max)}, filled ${c.filled}/${c.total}`);
       } else if (c.type === "categorical") {
-        const top = groupCounts(source.rows, c.name, { limit: 6 })
-          .map((e) => `${e.name} (${e.value}, ${Math.round(e.pct * 100)}%)`)
+        const top = groupCounts(source.rows, c.name, { limit: 6, splitMulti: c.multiSelect })
+          .map((e) => `${e.name} (${e.value}, ${Math.round((e.pct || 0) * 100)}%)`)
           .join(", ");
-        lines.push(`- ${c.name} (categorical, ${c.unique} unique): top values ${top}`);
+        lines.push(`- ${c.name} (categorical, ${c.unique} unique${c.multiSelect ? ", multi-select" : ""}): top values ${top}`);
       } else if (c.type === "date") {
         lines.push(`- ${c.name} (date field), filled ${c.filled}/${c.total}`);
       }
@@ -297,22 +514,33 @@ export default function FieldDesk() {
         y += 12;
       });
 
-      // Append chart images captured from the currently rendered Overview charts, if any are on screen.
-      const chartNodes = document.querySelectorAll("[data-report-chart]");
+      const chartNodes = document.querySelectorAll("#report-render-root [data-report-chart]");
+      let imgY = margin;
+      let onPage = 0;
       for (const node of chartNodes) {
         const svg = node.querySelector("svg");
         if (!svg) continue;
         const { width, height } = svg.getBoundingClientRect();
+        if (!width || !height) continue;
         const svgData = new XMLSerializer().serializeToString(svg);
         const dataUrl = await svgToPngDataUrl(svgData, width, height);
-        doc.addPage();
         const label = node.getAttribute("data-report-chart");
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(13);
-        doc.text(label, margin, margin);
-        const imgWidth = 500;
+        const imgWidth = 480;
         const imgHeight = (height / width) * imgWidth;
-        doc.addImage(dataUrl, "PNG", margin, margin + 20, imgWidth, imgHeight);
+
+        if (onPage === 0) {
+          doc.addPage();
+          imgY = margin;
+        }
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10);
+        const titleLines = doc.splitTextToSize(label, imgWidth);
+        doc.text(titleLines, margin, imgY);
+        imgY += titleLines.length * 12 + 6;
+        doc.addImage(dataUrl, "PNG", margin, imgY, imgWidth, imgHeight);
+        imgY += imgHeight + 26;
+        onPage++;
+        if (imgY > 660) onPage = 0;
       }
 
       doc.save(`${active.name.replace(/\.[^.]+$/, "")}-report.pdf`);
@@ -408,6 +636,7 @@ export default function FieldDesk() {
                       setTab("overview");
                       setPage(1);
                       setSearch("");
+                      setFieldSearch("");
                     }}
                   >
                     <FileSpreadsheet className="w-4 h-4 shrink-0" />
@@ -500,37 +729,32 @@ export default function FieldDesk() {
                   {identifierCols.length > 0 && (
                     <p className="text-xs text-stone-500 bg-stone-50 border border-stone-200 rounded-sm px-3 py-2">
                       {identifierCols.map((c) => c.name).join(", ")} {identifierCols.length === 1 ? "looks" : "look"} like
-                      identifier fields (almost every value is unique), so {identifierCols.length === 1 ? "it isn't" : "they aren't"} shown
-                      as bar charts — check the Table tab to browse those values directly.
+                      identifier fields (almost every value is unique), so {identifierCols.length === 1 ? "it isn't" : "they aren't"} charted
+                      here — check the Table tab to browse those values directly.
                     </p>
                   )}
 
-                  {numCols.length > 0 && (
-                    <div className="bg-white border border-stone-300 rounded-sm p-4">
-                      <h2 className="font-serif text-base mb-3">Numeric fields</h2>
-                      <div className="grid sm:grid-cols-2 gap-3 text-sm font-mono">
-                        {numCols.map((c) => (
-                          <div key={c.name} className="flex justify-between border-b border-stone-100 pb-1">
-                            <span className="text-stone-600 truncate pr-2">{c.name}</span>
-                            <span className="text-stone-900 shrink-0">
-                              min {round(c.min)} · mean {round(c.mean)} · max {round(c.max)}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
+                  <div className="flex items-center justify-between">
+                    <h2 className="font-serif text-lg">All fields ({filteredFields.length})</h2>
+                    <div className="flex items-center gap-2 border border-stone-300 rounded-sm bg-white px-2 py-1">
+                      <Search className="w-3.5 h-3.5 text-stone-400" />
+                      <input
+                        value={fieldSearch}
+                        onChange={(e) => setFieldSearch(e.target.value)}
+                        placeholder="Filter questions"
+                        className="text-sm outline-none w-48"
+                      />
                     </div>
-                  )}
-
-                  <div className="grid md:grid-cols-2 gap-4">
-                    {catCols.slice(0, 4).map((c, i) => (
-                      <MiniBarChart key={c.name} title={c.name} rows={active.rows} colorIdx={i} />
-                    ))}
                   </div>
 
-                  {catCols.length === 0 && numCols.length === 0 && (
-                    <p className="text-sm text-stone-500">
-                      No categorical or numeric fields were detected — check the Table tab to see the raw data.
-                    </p>
+                  {filteredFields.length === 0 ? (
+                    <p className="text-sm text-stone-500">No fields match that filter.</p>
+                  ) : (
+                    <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                      {filteredFields.map((c, i) => (
+                        <FieldChart key={c.name} col={c} rows={active.rows} colorIdx={i} />
+                      ))}
+                    </div>
                   )}
                 </div>
               )}
@@ -538,9 +762,7 @@ export default function FieldDesk() {
               {tab === "charts" && (
                 <div className="space-y-6">
                   <div className="bg-white border border-stone-300 rounded-sm p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <h2 className="font-serif text-base">Break down by field</h2>
-                    </div>
+                    <h2 className="font-serif text-base mb-3">Custom pivot</h2>
                     <div className="flex flex-wrap gap-3 mb-4 text-sm">
                       <label className="flex items-center gap-2">
                         Group by
@@ -550,7 +772,7 @@ export default function FieldDesk() {
                           className="border border-stone-300 rounded-sm px-2 py-1"
                         >
                           {catCols.map((c) => (
-                            <option key={c.name} value={c.name}>{c.name}</option>
+                            <option key={c.name} value={c.name}>{c.name}{c.multiSelect ? " (multi-select)" : ""}</option>
                           ))}
                           {identifierCols.length > 0 && (
                             <optgroup label="Identifier-like fields">
@@ -561,19 +783,21 @@ export default function FieldDesk() {
                           )}
                         </select>
                       </label>
-                      <label className="flex items-center gap-2">
-                        Measure
-                        <select
-                          value={cfg.measure}
-                          onChange={(e) => setCfg({ measure: e.target.value })}
-                          className="border border-stone-300 rounded-sm px-2 py-1"
-                        >
-                          <option value="count">Count of rows</option>
-                          {numCols.length > 0 && <option value="sum">Sum of</option>}
-                          {numCols.length > 0 && <option value="avg">Average of</option>}
-                        </select>
-                      </label>
-                      {cfg.measure !== "count" && (
+                      {!groupIsMulti && (
+                        <label className="flex items-center gap-2">
+                          Measure
+                          <select
+                            value={cfg.measure}
+                            onChange={(e) => setCfg({ measure: e.target.value })}
+                            className="border border-stone-300 rounded-sm px-2 py-1"
+                          >
+                            <option value="count">Count of rows</option>
+                            {numCols.length > 0 && <option value="sum">Sum of</option>}
+                            {numCols.length > 0 && <option value="avg">Average of</option>}
+                          </select>
+                        </label>
+                      )}
+                      {!groupIsMulti && cfg.measure !== "count" && (
                         <select
                           value={cfg.measureCol}
                           onChange={(e) => setCfg({ measureCol: e.target.value })}
@@ -730,9 +954,8 @@ export default function FieldDesk() {
                 <div className="bg-white border border-stone-300 rounded-sm p-6 max-w-2xl">
                   <h2 className="font-serif text-lg mb-2">Dataset report</h2>
                   <p className="text-sm text-stone-600 mb-4">
-                    Generates a PDF with row/column counts, a breakdown of every field, and the chart
-                    currently shown on the Charts tab. Open the Charts tab first if you want a
-                    specific breakdown included.
+                    Generates a PDF with row/column counts, a written breakdown of every field, and a
+                    chart for every categorical and numeric question in this dataset.
                   </p>
                   <button
                     onClick={generateReport}
@@ -799,85 +1022,7 @@ export default function FieldDesk() {
           )}
         </main>
       </div>
-    </div>
-  );
-}
-
-function round(n) {
-  if (n === undefined || n === null || isNaN(n)) return "—";
-  return Math.round(n * 100) / 100;
-}
-
-async function svgToPngDataUrl(svgString, width, height) {
-  return new Promise((resolve) => {
-    const blob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, width, height);
-      ctx.drawImage(img, 0, 0, width, height);
-      URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL("image/png"));
-    };
-    img.src = url;
-  });
-}
-
-function DownloadChartButton({ label, containerId }) {
-  return (
-    <button
-      onClick={() => downloadChartPng(document.getElementById(containerId), label || "chart")}
-      className="ml-auto flex items-center gap-1 text-xs text-stone-600 border border-stone-300 rounded-sm px-2 py-1 hover:bg-stone-100"
-      title="Download this chart as a PNG"
-    >
-      <Download className="w-3.5 h-3.5" />
-      Download
-    </button>
-  );
-}
-
-function StatCard({ label, value }) {
-  return (
-    <div className="bg-white border border-stone-300 rounded-sm p-4">
-      <div className="text-sm text-stone-500">{label}</div>
-      <div className="font-serif text-2xl text-stone-900 mt-1">{value}</div>
-    </div>
-  );
-}
-
-function MiniBarChart({ title, rows, colorIdx }) {
-  const ref = useRef(null);
-  const data = useMemo(() => groupCounts(rows, title, { limit: 8 }), [rows, title]);
-
-  return (
-    <div className="bg-white border border-stone-300 rounded-sm p-4">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm text-stone-700 truncate">{title}</h3>
-        <button
-          onClick={() => downloadChartPng(ref.current, title)}
-          className="text-stone-400 hover:text-stone-700 shrink-0"
-          title="Download this chart as a PNG"
-        >
-          <Download className="w-3.5 h-3.5" />
-        </button>
-      </div>
-      <div ref={ref} data-report-chart={title}>
-        <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={data} margin={{ top: 16, right: 4, left: 0, bottom: 4 }}>
-            <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={40} />
-            <YAxis tick={{ fontSize: 10 }} width={28} />
-            <Tooltip formatter={(value, _n, item) => [`${value} (${Math.round((item.payload.pct || 0) * 100)}%)`, "Value"]} />
-            <Bar dataKey="value" radius={[3, 3, 0, 0]} fill={PALETTE[colorIdx % PALETTE.length]}>
-              <LabelList dataKey="value" position="top" style={{ fontSize: 10, fill: "#44403c" }} />
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      <ReportRenderRoot source={active} />
     </div>
   );
 }
