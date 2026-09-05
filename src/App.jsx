@@ -63,9 +63,12 @@ function tokenize(name) {
     .filter((w) => w.length > 2 && !STOPWORDS.has(w));
 }
 
-function sectionLabel(tokens) {
+// Takes a flat array of tokens WITH repeats (not deduped) so word frequency
+// is meaningful — a Set-based frequency count would treat every word as
+// equally common and pick near-random words for the label.
+function sectionLabel(allTokensWithRepeats) {
   const freq = {};
-  tokens.forEach((t) => {
+  allTokensWithRepeats.forEach((t) => {
     freq[t] = (freq[t] || 0) + 1;
   });
   const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]).map((e) => e[0]);
@@ -75,22 +78,44 @@ function sectionLabel(tokens) {
 
 // Groups consecutive fields into sections by shared wording, with no
 // domain-specific keywords, so it works on any survey's field names.
+// Two safeguards keep this from misgrouping:
+// - words that appear in most fields (e.g. "fence" in a fence survey) are
+//   treated as dataset-wide filler and ignored when deciding section breaks,
+//   since a word everyone uses doesn't distinguish one section from another
+// - a field only joins the running section if it shares a word with the
+//   IMMEDIATELY PRECEDING field, not the section's whole accumulated
+//   vocabulary, so one bridge word can't chain unrelated fields together
 function buildSections(fields) {
+  const allTokens = fields.map((f) => tokenize(f.name));
+  const docFreq = {};
+  allTokens.forEach((tokens) => {
+    new Set(tokens).forEach((t) => {
+      docFreq[t] = (docFreq[t] || 0) + 1;
+    });
+  });
+  const tooCommon = new Set(
+    Object.entries(docFreq).filter(([, count]) => count / fields.length > 0.3).map(([t]) => t)
+  );
+
   const groups = [];
   let current = null;
-  fields.forEach((f) => {
-    const tokens = tokenize(f.name);
-    if (current && tokens.some((t) => current.vocab.has(t))) {
+  let prevTokens = new Set();
+  fields.forEach((f, i) => {
+    const tokens = allTokens[i].filter((t) => !tooCommon.has(t));
+    const overlaps = tokens.some((t) => prevTokens.has(t));
+    if (current && overlaps) {
       current.fields.push(f);
-      tokens.forEach((t) => current.vocab.add(t));
+      current.allTokens.push(...tokens);
     } else {
-      current = { vocab: new Set(tokens), fields: [f] };
+      current = { allTokens: [...tokens], fields: [f] };
       groups.push(current);
     }
+    prevTokens = new Set(tokens);
   });
+
   const solid = groups.filter((g) => g.fields.length > 1);
   const leftovers = groups.filter((g) => g.fields.length === 1).flatMap((g) => g.fields);
-  const sections = solid.map((g) => ({ label: sectionLabel([...g.vocab]), fields: g.fields }));
+  const sections = solid.map((g) => ({ label: sectionLabel(g.allTokens), fields: g.fields }));
   if (leftovers.length) sections.push({ label: "Other questions", fields: leftovers });
   if (sections.length === 0) return fields.length ? [{ label: "All questions", fields }] : [];
   return sections;
@@ -355,11 +380,11 @@ function FieldChart({ col, rows, colorIdx, kind, onChangeKind, accent }) {
     <div
       ref={ref}
       data-report-chart={col.name}
-      className="bg-white border border-stone-300 rounded-md p-4 hover:shadow-md transition-shadow"
-      style={accent ? { borderLeft: `3px solid ${accent}`, borderRadius: "0 8px 8px 0" } : undefined}
+      className="bg-white border border-stone-200 rounded-lg p-5 shadow-sm hover:shadow-md transition-shadow"
+      style={accent ? { borderLeft: `3px solid ${accent}`, borderRadius: "0 10px 10px 0" } : undefined}
     >
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <h3 className="text-sm text-stone-800 leading-snug" title={col.name}>{col.name}</h3>
+      <div className="flex items-start justify-between gap-2 mb-3">
+        <h3 className="text-sm text-stone-800 leading-snug font-medium" title={col.name}>{col.name}</h3>
         <button
           onClick={() => downloadCardPng(ref.current, col.name)}
           className="text-stone-400 hover:text-stone-700 shrink-0"
@@ -371,14 +396,14 @@ function FieldChart({ col, rows, colorIdx, kind, onChangeKind, accent }) {
       <select
         value={kind}
         onChange={(e) => onChangeKind(col.name, e.target.value)}
-        className="text-xs border border-stone-300 rounded-sm px-1.5 py-0.5 mb-2 text-stone-600 bg-stone-50"
+        className="text-xs border border-stone-200 rounded-full px-2.5 py-1 mb-3 text-stone-600 bg-stone-50 hover:bg-stone-100 transition-colors"
       >
         {CHART_KIND_OPTIONS.map((o) => (
           <option key={o.value} value={o.value}>{o.label}</option>
         ))}
       </select>
       <GenericChart kind={kind} data={data} colorIdx={colorIdx} />
-      {insight && <p className="text-xs text-stone-500 mt-2 border-t border-stone-100 pt-2">{insight}</p>}
+      {insight && <p className="text-xs text-stone-500 mt-3 border-t border-stone-100 pt-3">{insight}</p>}
     </div>
   );
 }
@@ -861,8 +886,8 @@ export default function FieldDesk() {
                 <div className="flex gap-2 flex-wrap">
                   <button
                     onClick={() => setActiveSection("all")}
-                    className={`text-xs px-3 py-1 rounded-full transition-colors ${
-                      activeSection === "all" ? "bg-stone-900 text-white" : "bg-white border border-stone-300 text-stone-600 hover:bg-stone-100"
+                    className={`text-xs font-medium px-3.5 py-1.5 rounded-full transition-colors ${
+                      activeSection === "all" ? "bg-stone-900 text-white shadow-sm" : "bg-white border border-stone-200 text-stone-600 hover:bg-stone-100"
                     }`}
                   >
                     All sections
@@ -871,8 +896,8 @@ export default function FieldDesk() {
                     <button
                       key={s.label}
                       onClick={() => setActiveSection(s.label)}
-                      className={`text-xs px-3 py-1 rounded-full transition-colors ${
-                        activeSection === s.label ? "text-white" : "bg-white border border-stone-300 text-stone-600 hover:bg-stone-100"
+                      className={`text-xs font-medium px-3.5 py-1.5 rounded-full transition-colors ${
+                        activeSection === s.label ? "text-white shadow-sm" : "bg-white border border-stone-200 text-stone-600 hover:bg-stone-100"
                       }`}
                       style={activeSection === s.label ? { backgroundColor: SECTION_ACCENTS[i % SECTION_ACCENTS.length] } : undefined}
                     >
