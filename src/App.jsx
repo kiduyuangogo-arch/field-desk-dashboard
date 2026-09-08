@@ -14,8 +14,8 @@ import {
   FileText, Sparkles, Send, SlidersHorizontal,
 } from "lucide-react";
 
-const PALETTE = ["#3f6b52", "#b5652b", "#5c7a8a", "#8a6d3b", "#6b5b8a", "#4a7c6f", "#a5763f", "#527a7a"];
-const SECTION_ACCENTS = ["#b5652b", "#3f6b52", "#5c7a8a", "#8a6d3b", "#6b5b8a", "#4a7c6f"];
+const PALETTE = ["#e2793d", "#4c8dd9", "#6fb84c", "#c79a3c", "#8b79c9", "#4ca79a", "#c97a4c", "#6c8aa3"];
+const SECTION_ACCENTS = PALETTE;
 const PAGE_SIZE = 25;
 const IDENTIFIER_THRESHOLD = 0.85;
 const SYSTEM_FIELD_NAMES = new Set(["objectid", "globalid", "creationdate", "creator", "editdate", "editor", "x", "y"]);
@@ -36,12 +36,20 @@ const CHART_KIND_OPTIONS = [
   { value: "donut", label: "Donut" },
 ];
 
-// A stable, screen-position-independent way to rasterize a DOM node.
-// html2canvas by default captures relative to the page's current scroll
-// position, which misaligns results for elements outside the viewport.
+// Shared styling so every recharts element reads clearly on a dark surface —
+// recharts defaults (dark tick text, white tooltip box) assume a light page.
+const AXIS_TICK = { fontSize: 10, fill: "#9a9a95" };
+const GRID_STROKE = "#2b2b28";
+const LABEL_STYLE = { fontSize: 10, fill: "#e8e6e0" };
+const TOOLTIP_PROPS = {
+  contentStyle: { background: "#1c1c1a", border: "1px solid #3a3a36", borderRadius: 8, fontSize: 12 },
+  itemStyle: { color: "#e8e6e0" },
+  labelStyle: { color: "#e8e6e0" },
+};
+
 async function captureNode(node) {
   return html2canvas(node, {
-    backgroundColor: "#ffffff",
+    backgroundColor: "#141412",
     scale: 2,
     scrollX: 0,
     scrollY: 0,
@@ -63,9 +71,6 @@ function tokenize(name) {
     .filter((w) => w.length > 2 && !STOPWORDS.has(w));
 }
 
-// Takes a flat array of tokens WITH repeats (not deduped) so word frequency
-// is meaningful — a Set-based frequency count would treat every word as
-// equally common and pick near-random words for the label.
 function sectionLabel(allTokensWithRepeats) {
   const freq = {};
   allTokensWithRepeats.forEach((t) => {
@@ -76,15 +81,6 @@ function sectionLabel(allTokensWithRepeats) {
   return top.length ? top.join(" and ") : "Questions";
 }
 
-// Groups consecutive fields into sections by shared wording, with no
-// domain-specific keywords, so it works on any survey's field names.
-// Two safeguards keep this from misgrouping:
-// - words that appear in most fields (e.g. "fence" in a fence survey) are
-//   treated as dataset-wide filler and ignored when deciding section breaks,
-//   since a word everyone uses doesn't distinguish one section from another
-// - a field only joins the running section if it shares a word with the
-//   IMMEDIATELY PRECEDING field, not the section's whole accumulated
-//   vocabulary, so one bridge word can't chain unrelated fields together
 function buildSections(fields) {
   const allTokens = fields.map((f) => tokenize(f.name));
   const docFreq = {};
@@ -288,21 +284,17 @@ async function downloadCardPng(cardEl, filename) {
   a.click();
 }
 
-function BrandMark() {
-  return <MapPinned className="w-5 h-5 text-amber-300" />;
-}
-
 function PieCard({ data, colorIdx, donut }) {
   return (
     <ResponsiveContainer width="100%" height={210}>
       <PieChart>
         <Pie data={data} dataKey="value" nameKey="name" innerRadius={donut ? 38 : 0} outerRadius={68} paddingAngle={2}>
           {data.map((_e, i) => (
-            <Cell key={i} fill={PALETTE[(colorIdx + i) % PALETTE.length]} />
+            <Cell key={i} fill={PALETTE[(colorIdx + i) % PALETTE.length]} stroke="#141412" strokeWidth={1} />
           ))}
         </Pie>
-        <Tooltip formatter={(v, _n, item) => [`${v} (${Math.round((item.payload.pct || 0) * 100)}%)`, "Value"]} />
-        <Legend wrapperStyle={{ fontSize: 11 }} />
+        <Tooltip {...TOOLTIP_PROPS} formatter={(v, _n, item) => [`${v} (${Math.round((item.payload.pct || 0) * 100)}%)`, "Value"]} />
+        <Legend wrapperStyle={{ fontSize: 11, color: "#c9c7c0" }} formatter={(value) => <span style={{ color: "#c9c7c0" }}>{value}</span>} />
       </PieChart>
     </ResponsiveContainer>
   );
@@ -313,11 +305,11 @@ function HBarCard({ data, colorIdx }) {
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} layout="vertical" margin={{ top: 4, right: 32, left: 8, bottom: 4 }}>
-        <XAxis type="number" tick={{ fontSize: 10 }} />
-        <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 10 }} />
-        <Tooltip formatter={(v, _n, item) => [`${v} (${Math.round((item.payload.pct || 0) * 100)}%)`, "Value"]} />
+        <XAxis type="number" tick={AXIS_TICK} />
+        <YAxis type="category" dataKey="name" width={130} tick={AXIS_TICK} />
+        <Tooltip {...TOOLTIP_PROPS} formatter={(v, _n, item) => [`${v} (${Math.round((item.payload.pct || 0) * 100)}%)`, "Value"]} />
         <Bar dataKey="value" radius={[0, 3, 3, 0]}>
-          <LabelList dataKey="value" position="right" style={{ fontSize: 10, fill: "#44403c" }} />
+          <LabelList dataKey="value" position="right" style={LABEL_STYLE} />
           {data.map((_e, i) => (
             <Cell key={i} fill={PALETTE[(colorIdx + i) % PALETTE.length]} />
           ))}
@@ -331,11 +323,11 @@ function Bar2DCard({ data, colorIdx, threeD }) {
   return (
     <ResponsiveContainer width="100%" height={210}>
       <BarChart data={data} margin={{ top: 16, right: threeD ? 14 : 4, left: 0, bottom: 34 }}>
-        <XAxis dataKey="name" tick={{ fontSize: 9 }} angle={-25} textAnchor="end" interval={0} height={50} />
-        <YAxis tick={{ fontSize: 10 }} width={28} />
-        <Tooltip />
+        <XAxis dataKey="name" tick={{ ...AXIS_TICK, fontSize: 9 }} angle={-25} textAnchor="end" interval={0} height={50} />
+        <YAxis tick={AXIS_TICK} width={28} />
+        <Tooltip {...TOOLTIP_PROPS} />
         <Bar dataKey="value" radius={threeD ? 0 : [3, 3, 0, 0]} fill={PALETTE[colorIdx % PALETTE.length]} shape={threeD ? ThreeDBarShape : undefined}>
-          <LabelList dataKey="value" position="top" style={{ fontSize: 10, fill: "#44403c" }} />
+          <LabelList dataKey="value" position="top" style={LABEL_STYLE} />
         </Bar>
       </BarChart>
     </ResponsiveContainer>
@@ -346,10 +338,10 @@ function LineFieldCard({ data, colorIdx }) {
   return (
     <ResponsiveContainer width="100%" height={210}>
       <LineChart data={data} margin={{ top: 16, right: 8, left: 0, bottom: 34 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#e7e2d3" />
-        <XAxis dataKey="name" tick={{ fontSize: 9 }} angle={-25} textAnchor="end" interval={0} height={50} />
-        <YAxis tick={{ fontSize: 10 }} width={28} />
-        <Tooltip />
+        <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+        <XAxis dataKey="name" tick={{ ...AXIS_TICK, fontSize: 9 }} angle={-25} textAnchor="end" interval={0} height={50} />
+        <YAxis tick={AXIS_TICK} width={28} />
+        <Tooltip {...TOOLTIP_PROPS} />
         <Line type="monotone" dataKey="value" stroke={PALETTE[colorIdx % PALETTE.length]} strokeWidth={2} dot={{ r: 3 }} />
       </LineChart>
     </ResponsiveContainer>
@@ -380,14 +372,14 @@ function FieldChart({ col, rows, colorIdx, kind, onChangeKind, accent }) {
     <div
       ref={ref}
       data-report-chart={col.name}
-      className="bg-white border border-stone-200 rounded-lg p-5 shadow-sm hover:shadow-md transition-shadow"
-      style={accent ? { borderLeft: `3px solid ${accent}`, borderRadius: "0 10px 10px 0" } : undefined}
+      className="bg-neutral-900 border border-neutral-800 rounded-lg p-5 hover:border-neutral-700 transition-colors"
+      style={accent ? { borderLeft: `3px solid ${accent}` } : undefined}
     >
       <div className="flex items-start justify-between gap-2 mb-3">
-        <h3 className="text-sm text-stone-800 leading-snug font-medium" title={col.name}>{col.name}</h3>
+        <h3 className="text-sm text-neutral-100 leading-snug font-medium" title={col.name}>{col.name}</h3>
         <button
           onClick={() => downloadCardPng(ref.current, col.name)}
-          className="text-stone-400 hover:text-stone-700 shrink-0"
+          className="text-neutral-500 hover:text-neutral-200 shrink-0"
           title="Download this chart as a PNG"
         >
           <Download className="w-3.5 h-3.5" />
@@ -396,26 +388,23 @@ function FieldChart({ col, rows, colorIdx, kind, onChangeKind, accent }) {
       <select
         value={kind}
         onChange={(e) => onChangeKind(col.name, e.target.value)}
-        className="text-xs border border-stone-200 rounded-full px-2.5 py-1 mb-3 text-stone-600 bg-stone-50 hover:bg-stone-100 transition-colors"
+        className="text-xs border border-neutral-700 rounded-full px-2.5 py-1 mb-3 text-neutral-300 bg-neutral-800 hover:bg-neutral-700 transition-colors"
       >
         {CHART_KIND_OPTIONS.map((o) => (
           <option key={o.value} value={o.value}>{o.label}</option>
         ))}
       </select>
       <GenericChart kind={kind} data={data} colorIdx={colorIdx} />
-      {insight && <p className="text-xs text-stone-500 mt-3 border-t border-stone-100 pt-3">{insight}</p>}
+      {insight && <p className="text-xs text-neutral-400 mt-3 border-t border-neutral-800 pt-3">{insight}</p>}
     </div>
   );
 }
 
-// Kept in normal document flow (not off-screen with a negative offset) so
-// html2canvas's scroll-relative capture math stays correct: the wrapper is
-// zero-height and clipped, but its child still lays out at full size.
 function ReportRenderRoot({ sections, rows, kindFor }) {
   if (!sections.length) return null;
   return (
     <div style={{ height: 0, overflow: "hidden" }} aria-hidden="true">
-      <div id="report-render-root" style={{ width: 560 }}>
+      <div id="report-render-root" style={{ width: 560, background: "#141412" }}>
         {sections.map((section) =>
           section.fields.map((c, i) => (
             <div key={c.name} data-report-section={section.label} style={{ width: 560, marginBottom: 24 }}>
@@ -430,9 +419,9 @@ function ReportRenderRoot({ sections, rows, kindFor }) {
 
 function StatCard({ label, value }) {
   return (
-    <div className="bg-white border border-stone-300 rounded-md p-4 hover:shadow-sm transition-shadow">
-      <div className="text-sm text-stone-500">{label}</div>
-      <div className="font-serif text-2xl text-stone-900 mt-1">{value}</div>
+    <div className="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
+      <div className="text-sm text-neutral-400">{label}</div>
+      <div className="font-serif text-2xl text-neutral-50 mt-1">{value}</div>
     </div>
   );
 }
@@ -752,11 +741,11 @@ export default function FieldDesk() {
   };
 
   return (
-    <div className="w-full min-h-screen bg-stone-100 text-stone-900 font-sans flex flex-col">
-      <header className="bg-emerald-900 text-stone-50 px-6 py-4 flex items-center justify-between">
+    <div className="w-full min-h-screen bg-neutral-950 text-neutral-100 font-sans flex flex-col">
+      <header className="border-b border-neutral-800 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <BrandMark />
-          <h1 className="font-serif text-xl">Field Desk</h1>
+          <MapPinned className="w-5 h-5 text-amber-400" />
+          <h1 className="font-serif text-xl text-neutral-50">Field Desk</h1>
         </div>
         {sources.length > 0 && (
           <div className="flex items-center gap-2">
@@ -767,13 +756,13 @@ export default function FieldDesk() {
                 setTab("overview");
                 setActiveSection("all");
               }}
-              className="text-sm bg-emerald-800 text-white border border-emerald-700 rounded-sm px-2 py-1"
+              className="text-sm bg-neutral-900 text-neutral-200 border border-neutral-700 rounded-full px-3 py-1.5"
             >
               {sources.map((s) => (
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
             </select>
-            <label className="flex items-center gap-1.5 text-sm bg-emerald-700 hover:bg-emerald-600 transition-colors text-white px-3 py-1.5 rounded-sm cursor-pointer">
+            <label className="flex items-center gap-1.5 text-sm bg-neutral-100 hover:bg-white transition-colors text-neutral-900 px-3 py-1.5 rounded-full cursor-pointer font-medium">
               <Upload className="w-3.5 h-3.5" />
               Add file
               <input
@@ -789,10 +778,10 @@ export default function FieldDesk() {
       </header>
 
       {error && (
-        <div className="bg-amber-50 border-b border-amber-300 text-amber-900 text-sm px-6 py-2 flex items-center gap-2">
+        <div className="bg-amber-950/40 border-b border-amber-800/60 text-amber-200 text-sm px-6 py-2 flex items-center gap-2">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{error}</span>
-          <button onClick={() => setError("")} className="ml-auto text-amber-700 hover:text-amber-900">
+          <button onClick={() => setError("")} className="ml-auto text-amber-400 hover:text-amber-100">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -807,14 +796,14 @@ export default function FieldDesk() {
             }}
             onDragLeave={() => setDragOver(false)}
             onDrop={onDrop}
-            className={`border-2 border-dashed rounded p-16 text-center transition-colors ${
-              dragOver ? "border-emerald-600 bg-emerald-50" : "border-stone-300 bg-white"
+            className={`border-2 border-dashed rounded-xl p-16 text-center transition-colors ${
+              dragOver ? "border-emerald-600 bg-emerald-950/20" : "border-neutral-800 bg-neutral-900/40"
             }`}
           >
-            <Upload className="w-8 h-8 mx-auto text-stone-400 mb-3" />
-            <p className="font-serif text-lg text-stone-700">Drop a survey export here</p>
-            <p className="text-sm text-stone-500 mt-1 mb-4">CSV or Excel, from Survey123, Kobo, Google Forms, or elsewhere.</p>
-            <label className="inline-block bg-emerald-800 text-white text-sm px-4 py-2 rounded-sm cursor-pointer hover:bg-emerald-900">
+            <Upload className="w-8 h-8 mx-auto text-neutral-500 mb-3" />
+            <p className="font-serif text-lg text-neutral-100">Drop a survey export here</p>
+            <p className="text-sm text-neutral-400 mt-1 mb-4">CSV or Excel, from Survey123, Kobo, Google Forms, or elsewhere.</p>
+            <label className="inline-block bg-neutral-100 hover:bg-white transition-colors text-neutral-900 text-sm font-medium px-4 py-2 rounded-full cursor-pointer">
               Choose a file
               <input
                 type="file"
@@ -828,14 +817,14 @@ export default function FieldDesk() {
         </main>
       ) : (
         <div className="flex flex-1 flex-col md:flex-row">
-          <nav className="flex md:flex-col items-center gap-4 bg-stone-50 border-b md:border-b-0 md:border-r border-stone-300 py-3 md:py-5 md:w-14 shrink-0">
+          <nav className="flex md:flex-col items-center gap-3 border-b md:border-b-0 md:border-r border-neutral-800 py-3 md:py-5 md:w-14 shrink-0">
             {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 onClick={() => setTab(id)}
                 title={label}
-                className={`p-2 rounded-sm transition-colors ${
-                  tab === id ? "bg-emerald-800 text-white" : "text-stone-500 hover:bg-stone-200 hover:text-stone-800"
+                className={`p-2.5 rounded-lg transition-colors ${
+                  tab === id ? "bg-neutral-100 text-neutral-900" : "text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
                 }`}
               >
                 <Icon className="w-4 h-4" />
@@ -848,18 +837,18 @@ export default function FieldDesk() {
               <div className="space-y-6">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="font-serif text-xl">{active.name}</p>
-                    <p className="text-sm text-stone-600 mt-0.5">
+                    <p className="font-serif text-2xl text-neutral-50">{active.name}</p>
+                    <p className="text-sm text-neutral-400 mt-0.5">
                       {active.rows.length.toLocaleString()} responses · {chartableFields.length} questions across {sections.length} section{sections.length === 1 ? "" : "s"}
                     </p>
                   </div>
-                  <div className="flex items-center gap-2 border border-stone-300 rounded-sm bg-white px-2 py-1.5">
-                    <Search className="w-3.5 h-3.5 text-stone-400" />
+                  <div className="flex items-center gap-2 border border-neutral-700 rounded-full bg-neutral-900 px-3 py-1.5">
+                    <Search className="w-3.5 h-3.5 text-neutral-500" />
                     <input
                       value={fieldSearch}
                       onChange={(e) => setFieldSearch(e.target.value)}
                       placeholder="Filter questions"
-                      className="text-sm outline-none w-44"
+                      className="text-sm outline-none w-44 bg-transparent text-neutral-200 placeholder:text-neutral-500"
                     />
                   </div>
                 </div>
@@ -872,7 +861,7 @@ export default function FieldDesk() {
                 </div>
 
                 {(identifierCols.length > 0 || systemCols.length > 0) && (
-                  <p className="text-xs text-stone-500 bg-stone-50 border border-stone-200 rounded-sm px-3 py-2">
+                  <p className="text-xs text-neutral-400 bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2.5">
                     {systemCols.length > 0 && (
                       <>System fields ({systemCols.map((c) => c.name).join(", ")}) are Survey123/GIS metadata, not questions, so they're kept out of the sections below. </>
                     )}
@@ -887,7 +876,7 @@ export default function FieldDesk() {
                   <button
                     onClick={() => setActiveSection("all")}
                     className={`text-xs font-medium px-3.5 py-1.5 rounded-full transition-colors ${
-                      activeSection === "all" ? "bg-stone-900 text-white shadow-sm" : "bg-white border border-stone-200 text-stone-600 hover:bg-stone-100"
+                      activeSection === "all" ? "bg-neutral-100 text-neutral-900" : "bg-transparent border border-neutral-700 text-neutral-300 hover:bg-neutral-900"
                     }`}
                   >
                     All sections
@@ -897,7 +886,7 @@ export default function FieldDesk() {
                       key={s.label}
                       onClick={() => setActiveSection(s.label)}
                       className={`text-xs font-medium px-3.5 py-1.5 rounded-full transition-colors ${
-                        activeSection === s.label ? "text-white shadow-sm" : "bg-white border border-stone-200 text-stone-600 hover:bg-stone-100"
+                        activeSection === s.label ? "text-white" : "bg-transparent border border-neutral-700 text-neutral-300 hover:bg-neutral-900"
                       }`}
                       style={activeSection === s.label ? { backgroundColor: SECTION_ACCENTS[i % SECTION_ACCENTS.length] } : undefined}
                     >
@@ -907,7 +896,7 @@ export default function FieldDesk() {
                 </div>
 
                 {visibleSections.length === 0 ? (
-                  <p className="text-sm text-stone-500">No questions match that filter.</p>
+                  <p className="text-sm text-neutral-500">No questions match that filter.</p>
                 ) : (
                   visibleSections.map((section) => {
                     const sectionIdx = sections.findIndex((s) => s.label === section.label);
@@ -916,8 +905,8 @@ export default function FieldDesk() {
                       <div key={section.label}>
                         <div className="flex items-center gap-2 mb-3">
                           <span className="text-sm font-medium" style={{ color: accent }}>{section.label}</span>
-                          <span className="text-xs text-stone-400">{section.fields.length} question{section.fields.length === 1 ? "" : "s"}</span>
-                          <div className="flex-1 h-px bg-stone-200" />
+                          <span className="text-xs text-neutral-500">{section.fields.length} question{section.fields.length === 1 ? "" : "s"}</span>
+                          <div className="flex-1 h-px bg-neutral-800" />
                         </div>
                         <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-4 mb-2">
                           {section.fields.map((c, i) => (
@@ -941,19 +930,19 @@ export default function FieldDesk() {
 
             {tab === "charts" && (
               <div className="space-y-6">
-                <div className="bg-white border border-stone-300 rounded-md p-4">
-                  <h2 className="font-serif text-base mb-4 flex items-center gap-2">
-                    <SlidersHorizontal className="w-4 h-4 text-stone-500" />
+                <div className="bg-neutral-900 border border-neutral-800 rounded-lg p-5">
+                  <h2 className="font-serif text-base mb-4 flex items-center gap-2 text-neutral-50">
+                    <SlidersHorizontal className="w-4 h-4 text-neutral-500" />
                     Custom pivot
                   </h2>
                   <div className="flex flex-col md:flex-row gap-6">
                     <div className="w-full md:w-56 shrink-0 space-y-4 text-sm">
                       <label className="block">
-                        <span className="block text-xs text-stone-500 mb-1">Group by</span>
+                        <span className="block text-xs text-neutral-500 mb-1">Group by</span>
                         <select
                           value={cfg.groupCol}
                           onChange={(e) => setCfg({ groupCol: e.target.value })}
-                          className="w-full border border-stone-300 rounded-sm px-2 py-1.5"
+                          className="w-full border border-neutral-700 rounded-lg px-2 py-1.5 bg-neutral-800 text-neutral-200"
                         >
                           {catCols.map((c) => (
                             <option key={c.name} value={c.name}>{c.name}{c.multiSelect ? " (multi-select)" : ""}</option>
@@ -969,11 +958,11 @@ export default function FieldDesk() {
                       </label>
                       {!groupIsMulti && (
                         <label className="block">
-                          <span className="block text-xs text-stone-500 mb-1">Measure</span>
+                          <span className="block text-xs text-neutral-500 mb-1">Measure</span>
                           <select
                             value={cfg.measure}
                             onChange={(e) => setCfg({ measure: e.target.value })}
-                            className="w-full border border-stone-300 rounded-sm px-2 py-1.5"
+                            className="w-full border border-neutral-700 rounded-lg px-2 py-1.5 bg-neutral-800 text-neutral-200"
                           >
                             <option value="count">Count of rows</option>
                             {numCols.length > 0 && <option value="sum">Sum of</option>}
@@ -983,11 +972,11 @@ export default function FieldDesk() {
                       )}
                       {!groupIsMulti && cfg.measure !== "count" && (
                         <label className="block">
-                          <span className="block text-xs text-stone-500 mb-1">Numeric field</span>
+                          <span className="block text-xs text-neutral-500 mb-1">Numeric field</span>
                           <select
                             value={cfg.measureCol}
                             onChange={(e) => setCfg({ measureCol: e.target.value })}
-                            className="w-full border border-stone-300 rounded-sm px-2 py-1.5"
+                            className="w-full border border-neutral-700 rounded-lg px-2 py-1.5 bg-neutral-800 text-neutral-200"
                           >
                             {numCols.map((c) => (
                               <option key={c.name} value={c.name}>{c.name}</option>
@@ -997,7 +986,7 @@ export default function FieldDesk() {
                       )}
                       <button
                         onClick={() => downloadCardPng(document.getElementById("group-chart"), cfg.groupCol || "chart")}
-                        className="flex items-center gap-1.5 text-xs text-stone-600 border border-stone-300 rounded-sm px-2 py-1.5 hover:bg-stone-100 w-full justify-center"
+                        className="flex items-center gap-1.5 text-xs text-neutral-300 border border-neutral-700 rounded-full px-2 py-1.5 hover:bg-neutral-800 w-full justify-center"
                       >
                         <Download className="w-3.5 h-3.5" />
                         Download chart
@@ -1005,17 +994,17 @@ export default function FieldDesk() {
                     </div>
                     <div className="flex-1 min-w-0">
                       {catCols.length === 0 ? (
-                        <p className="text-sm text-stone-500">No categorical fields to group by.</p>
+                        <p className="text-sm text-neutral-500">No categorical fields to group by.</p>
                       ) : (
-                        <div id="group-chart" className="bg-white">
+                        <div id="group-chart" className="bg-neutral-900">
                           <ResponsiveContainer width="100%" height={340}>
                             <BarChart data={groupChartData} margin={{ top: 20, right: 8, left: 0, bottom: 50 }}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#e7e2d3" />
-                              <XAxis dataKey="name" tick={{ fontSize: 11 }} angle={-30} textAnchor="end" interval={0} />
-                              <YAxis tick={{ fontSize: 11 }} />
-                              <Tooltip formatter={(value, _n, item) => [`${round(value)} (${Math.round((item.payload.pct || 0) * 100)}%)`, "Value"]} />
+                              <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+                              <XAxis dataKey="name" tick={AXIS_TICK} angle={-30} textAnchor="end" interval={0} />
+                              <YAxis tick={AXIS_TICK} />
+                              <Tooltip {...TOOLTIP_PROPS} formatter={(value, _n, item) => [`${round(value)} (${Math.round((item.payload.pct || 0) * 100)}%)`, "Value"]} />
                               <Bar dataKey="value" radius={[3, 3, 0, 0]}>
-                                <LabelList dataKey="value" position="top" style={{ fontSize: 11, fill: "#44403c" }} formatter={(v) => round(v)} />
+                                <LabelList dataKey="value" position="top" style={LABEL_STYLE} formatter={(v) => round(v)} />
                                 {groupChartData.map((_entry, i) => (
                                   <Cell key={i} fill={PALETTE[i % PALETTE.length]} />
                                 ))}
@@ -1029,16 +1018,16 @@ export default function FieldDesk() {
                 </div>
 
                 {dateCols.length > 0 && (
-                  <div className="bg-white border border-stone-300 rounded-md p-4">
-                    <h2 className="font-serif text-base mb-4">Responses over time</h2>
+                  <div className="bg-neutral-900 border border-neutral-800 rounded-lg p-5">
+                    <h2 className="font-serif text-base mb-4 text-neutral-50">Responses over time</h2>
                     <div className="flex flex-col md:flex-row gap-6">
                       <div className="w-full md:w-56 shrink-0 space-y-4 text-sm">
                         <label className="block">
-                          <span className="block text-xs text-stone-500 mb-1">Date field</span>
+                          <span className="block text-xs text-neutral-500 mb-1">Date field</span>
                           <select
                             value={cfg.dateCol}
                             onChange={(e) => setCfg({ dateCol: e.target.value })}
-                            className="w-full border border-stone-300 rounded-sm px-2 py-1.5"
+                            className="w-full border border-neutral-700 rounded-lg px-2 py-1.5 bg-neutral-800 text-neutral-200"
                           >
                             {dateCols.map((c) => (
                               <option key={c.name} value={c.name}>{c.name}</option>
@@ -1046,11 +1035,11 @@ export default function FieldDesk() {
                           </select>
                         </label>
                         <label className="block">
-                          <span className="block text-xs text-stone-500 mb-1">Group by</span>
+                          <span className="block text-xs text-neutral-500 mb-1">Group by</span>
                           <select
                             value={cfg.timeBucket}
                             onChange={(e) => setCfg({ timeBucket: e.target.value })}
-                            className="w-full border border-stone-300 rounded-sm px-2 py-1.5"
+                            className="w-full border border-neutral-700 rounded-lg px-2 py-1.5 bg-neutral-800 text-neutral-200"
                           >
                             <option value="day">Day</option>
                             <option value="week">Week</option>
@@ -1059,21 +1048,21 @@ export default function FieldDesk() {
                         </label>
                         <button
                           onClick={() => downloadCardPng(document.getElementById("time-chart"), `${cfg.dateCol}-over-time`)}
-                          className="flex items-center gap-1.5 text-xs text-stone-600 border border-stone-300 rounded-sm px-2 py-1.5 hover:bg-stone-100 w-full justify-center"
+                          className="flex items-center gap-1.5 text-xs text-neutral-300 border border-neutral-700 rounded-full px-2 py-1.5 hover:bg-neutral-800 w-full justify-center"
                         >
                           <Download className="w-3.5 h-3.5" />
                           Download chart
                         </button>
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div id="time-chart" className="bg-white">
+                        <div id="time-chart" className="bg-neutral-900">
                           <ResponsiveContainer width="100%" height={280}>
                             <LineChart data={timeChartData} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#e7e2d3" />
-                              <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                              <YAxis tick={{ fontSize: 11 }} />
-                              <Tooltip />
-                              <Line type="monotone" dataKey="value" stroke="#3f6b52" strokeWidth={2} dot={false} />
+                              <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+                              <XAxis dataKey="name" tick={AXIS_TICK} />
+                              <YAxis tick={AXIS_TICK} />
+                              <Tooltip {...TOOLTIP_PROPS} />
+                              <Line type="monotone" dataKey="value" stroke={PALETTE[1]} strokeWidth={2} dot={false} />
                             </LineChart>
                           </ResponsiveContainer>
                         </div>
@@ -1085,9 +1074,9 @@ export default function FieldDesk() {
             )}
 
             {tab === "table" && (
-              <div className="bg-white border border-stone-300 rounded-md">
-                <div className="p-3 border-b border-stone-200 flex items-center gap-2">
-                  <Search className="w-4 h-4 text-stone-400" />
+              <div className="bg-neutral-900 border border-neutral-800 rounded-lg">
+                <div className="p-3 border-b border-neutral-800 flex items-center gap-2">
+                  <Search className="w-4 h-4 text-neutral-500" />
                   <input
                     value={search}
                     onChange={(e) => {
@@ -1095,18 +1084,18 @@ export default function FieldDesk() {
                       setPage(1);
                     }}
                     placeholder="Search this data"
-                    className="flex-1 text-sm outline-none"
+                    className="flex-1 text-sm outline-none bg-transparent text-neutral-200 placeholder:text-neutral-500"
                   />
-                  <span className="text-xs text-stone-500">
+                  <span className="text-xs text-neutral-500">
                     {filteredRows.length.toLocaleString()} of {active.rows.length.toLocaleString()} rows
                   </span>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="bg-stone-50 border-b border-stone-200">
+                      <tr className="bg-neutral-950 border-b border-neutral-800">
                         {active.columns.map((c) => (
-                          <th key={c.name} className="text-left font-medium text-stone-600 px-3 py-2 whitespace-nowrap">
+                          <th key={c.name} className="text-left font-medium text-neutral-400 px-3 py-2 whitespace-nowrap">
                             {c.name}
                           </th>
                         ))}
@@ -1114,11 +1103,11 @@ export default function FieldDesk() {
                     </thead>
                     <tbody>
                       {pageRows.map((r, i) => (
-                        <tr key={i} className={i % 2 ? "bg-stone-50" : "bg-white"}>
+                        <tr key={i} className={i % 2 ? "bg-neutral-900" : "bg-neutral-950/50"}>
                           {active.columns.map((c) => (
                             <td
                               key={c.name}
-                              className={`px-3 py-1.5 whitespace-nowrap ${
+                              className={`px-3 py-1.5 whitespace-nowrap text-neutral-300 ${
                                 c.type === "numeric" ? "font-mono text-right" : ""
                               }`}
                             >
@@ -1130,22 +1119,22 @@ export default function FieldDesk() {
                     </tbody>
                   </table>
                 </div>
-                <div className="flex items-center justify-between p-3 border-t border-stone-200 text-sm">
-                  <span className="text-stone-500">
+                <div className="flex items-center justify-between p-3 border-t border-neutral-800 text-sm">
+                  <span className="text-neutral-500">
                     Page {page} of {pageCount}
                   </span>
                   <div className="flex gap-2">
                     <button
                       disabled={page <= 1}
                       onClick={() => setPage((p) => p - 1)}
-                      className="p-1.5 border border-stone-300 rounded-sm disabled:opacity-40 hover:bg-stone-100"
+                      className="p-1.5 border border-neutral-700 rounded-lg disabled:opacity-40 hover:bg-neutral-800 text-neutral-300"
                     >
                       <ChevronLeft className="w-4 h-4" />
                     </button>
                     <button
                       disabled={page >= pageCount}
                       onClick={() => setPage((p) => p + 1)}
-                      className="p-1.5 border border-stone-300 rounded-sm disabled:opacity-40 hover:bg-stone-100"
+                      className="p-1.5 border border-neutral-700 rounded-lg disabled:opacity-40 hover:bg-neutral-800 text-neutral-300"
                     >
                       <ChevronRight className="w-4 h-4" />
                     </button>
@@ -1155,35 +1144,35 @@ export default function FieldDesk() {
             )}
 
             {tab === "report" && (
-              <div className="bg-white border border-stone-300 rounded-md p-6 max-w-2xl">
-                <h2 className="font-serif text-lg mb-2">Dataset report</h2>
-                <p className="text-sm text-stone-600 mb-4">
+              <div className="bg-neutral-900 border border-neutral-800 rounded-lg p-6 max-w-2xl">
+                <h2 className="font-serif text-lg mb-2 text-neutral-50">Dataset report</h2>
+                <p className="text-sm text-neutral-400 mb-4">
                   Generates a PDF grouped into the same sections shown on Overview, with a chart
                   (matching whatever type you picked) and a one-line takeaway for every question.
                 </p>
                 <button
                   onClick={generateReport}
                   disabled={reportBusy}
-                  className="flex items-center gap-2 bg-emerald-800 text-white text-sm px-4 py-2 rounded-sm hover:bg-emerald-900 disabled:opacity-50"
+                  className="flex items-center gap-2 bg-neutral-100 hover:bg-white transition-colors text-neutral-900 text-sm font-medium px-4 py-2 rounded-full disabled:opacity-50"
                 >
                   <FileText className="w-4 h-4" />
                   {reportBusy ? "Building report…" : "Download PDF report"}
                 </button>
-                <div className="mt-6 text-xs text-stone-500 font-mono whitespace-pre-wrap border-t border-stone-200 pt-4">
+                <div className="mt-6 text-xs text-neutral-400 font-mono whitespace-pre-wrap border-t border-neutral-800 pt-4">
                   {buildProfile(active)}
                 </div>
               </div>
             )}
 
             {tab === "assistant" && (
-              <div className="bg-white border border-stone-300 rounded-md p-4 max-w-2xl flex flex-col h-[520px]">
+              <div className="bg-neutral-900 border border-neutral-800 rounded-lg p-4 max-w-2xl flex flex-col h-[520px]">
                 <div className="flex items-center gap-2 mb-3">
-                  <Sparkles className="w-4 h-4 text-amber-700" />
-                  <h2 className="font-serif text-base">Ask Claude about this data</h2>
+                  <Sparkles className="w-4 h-4 text-amber-400" />
+                  <h2 className="font-serif text-base text-neutral-50">Ask Claude about this data</h2>
                 </div>
                 <div className="flex-1 overflow-y-auto space-y-3 mb-3 pr-1">
                   {messages.length === 0 && (
-                    <p className="text-sm text-stone-500">
+                    <p className="text-sm text-neutral-500">
                       Ask things like "what stands out in this data?" or "summarize the gender split."
                       Claude sees a summary of your fields, not the raw rows.
                     </p>
@@ -1191,31 +1180,31 @@ export default function FieldDesk() {
                   {messages.map((m, i) => (
                     <div
                       key={i}
-                      className={`text-sm rounded-sm px-3 py-2 max-w-[85%] ${
+                      className={`text-sm rounded-lg px-3 py-2 max-w-[85%] ${
                         m.role === "user"
-                          ? "bg-emerald-800 text-white ml-auto"
+                          ? "bg-neutral-100 text-neutral-900 ml-auto"
                           : m.isError
-                            ? "bg-amber-50 text-amber-900 border border-amber-300"
-                            : "bg-stone-100 text-stone-800"
+                            ? "bg-amber-950/40 text-amber-200 border border-amber-800/60"
+                            : "bg-neutral-800 text-neutral-200"
                       }`}
                     >
                       {m.text}
                     </div>
                   ))}
-                  {chatLoading && <div className="text-sm text-stone-400">Thinking…</div>}
+                  {chatLoading && <div className="text-sm text-neutral-500">Thinking…</div>}
                 </div>
-                <div className="flex gap-2 border-t border-stone-200 pt-3">
+                <div className="flex gap-2 border-t border-neutral-800 pt-3">
                   <input
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && sendChat()}
                     placeholder="Ask a question about this dataset"
-                    className="flex-1 border border-stone-300 rounded-sm px-3 py-2 text-sm outline-none focus:border-emerald-700"
+                    className="flex-1 border border-neutral-700 rounded-full px-3 py-2 text-sm outline-none focus:border-neutral-500 bg-neutral-800 text-neutral-200 placeholder:text-neutral-500"
                   />
                   <button
                     onClick={sendChat}
                     disabled={chatLoading}
-                    className="bg-emerald-800 text-white px-3 py-2 rounded-sm hover:bg-emerald-900 disabled:opacity-50"
+                    className="bg-neutral-100 hover:bg-white transition-colors text-neutral-900 px-3 py-2 rounded-full disabled:opacity-50"
                   >
                     <Send className="w-4 h-4" />
                   </button>
